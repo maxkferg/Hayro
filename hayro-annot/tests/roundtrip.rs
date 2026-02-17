@@ -23,6 +23,65 @@ fn create_blank_pdf() -> Vec<u8> {
     pdf.finish()
 }
 
+/// Create a single-page PDF with nested dictionaries in the page object.
+///
+/// This catches regressions where /Annots insertion uses the first ">>"
+/// instead of the page dictionary's matching closing delimiter.
+fn create_pdf_with_nested_page_dict() -> Vec<u8> {
+    use pdf_writer::{Finish, Name, Pdf, Rect, Ref};
+
+    let catalog_id = Ref::new(1);
+    let page_tree_id = Ref::new(2);
+    let page_id = Ref::new(3);
+    let font_id = Ref::new(4);
+    let content_id = Ref::new(5);
+
+    let mut pdf = Pdf::new();
+    pdf.catalog(catalog_id).pages(page_tree_id);
+    pdf.pages(page_tree_id).kids([page_id]).count(1);
+
+    let mut page = pdf.page(page_id);
+    page.parent(page_tree_id);
+    page.media_box(Rect::new(0.0, 0.0, 595.0, 842.0));
+    page.contents(content_id);
+    page.resources().fonts().pair(Name(b"F1"), font_id);
+    page.finish();
+
+    pdf.type1_font(font_id).base_font(Name(b"Helvetica"));
+    pdf.stream(content_id, b"");
+    pdf.finish()
+}
+
+fn assert_startxref_points_to_xref(pdf_data: &[u8]) {
+    let marker = b"startxref";
+    let marker_pos = pdf_data
+        .windows(marker.len())
+        .rposition(|w| w == marker)
+        .expect("PDF should contain startxref");
+
+    let mut i = marker_pos + marker.len();
+    while i < pdf_data.len() && pdf_data[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let start = i;
+    while i < pdf_data.len() && pdf_data[i].is_ascii_digit() {
+        i += 1;
+    }
+    assert!(start < i, "startxref should point to an offset");
+
+    let offset = std::str::from_utf8(&pdf_data[start..i])
+        .expect("startxref value should be utf-8 digits")
+        .parse::<usize>()
+        .expect("startxref value should parse");
+
+    assert!(offset + 4 <= pdf_data.len(), "startxref points out of bounds");
+    assert_eq!(
+        &pdf_data[offset..offset + 4],
+        b"xref",
+        "startxref should point to an xref table"
+    );
+}
+
 #[test]
 fn roundtrip_highlight_annotation() {
     let pdf_data = create_blank_pdf();
@@ -50,6 +109,7 @@ fn roundtrip_highlight_annotation() {
         new_pdf_data.len() > pdf_data.len(),
         "new PDF should be larger"
     );
+    assert_startxref_points_to_xref(&new_pdf_data);
 
     // Verify the new PDF can be parsed
     let new_pdf = hayro_syntax::Pdf::new(new_pdf_data.clone());
@@ -98,6 +158,7 @@ fn roundtrip_ink_annotation() {
     assert!(result.is_ok(), "save should succeed: {:?}", result.err());
 
     let new_pdf_data = result.unwrap();
+    assert_startxref_points_to_xref(&new_pdf_data);
     let new_pdf = hayro_syntax::Pdf::new(new_pdf_data);
     assert!(new_pdf.is_ok(), "new PDF should be valid");
 }
@@ -121,6 +182,7 @@ fn roundtrip_square_annotation() {
     assert!(result.is_ok(), "save should succeed: {:?}", result.err());
 
     let new_pdf_data = result.unwrap();
+    assert_startxref_points_to_xref(&new_pdf_data);
     let new_pdf = hayro_syntax::Pdf::new(new_pdf_data);
     assert!(new_pdf.is_ok(), "new PDF should be valid");
 }
@@ -163,6 +225,7 @@ fn roundtrip_multiple_annotations() {
     assert!(result.is_ok(), "save should succeed: {:?}", result.err());
 
     let new_pdf_data = result.unwrap();
+    assert_startxref_points_to_xref(&new_pdf_data);
     let new_pdf = hayro_syntax::Pdf::new(new_pdf_data.clone());
     assert!(new_pdf.is_ok(), "new PDF should be valid");
 
@@ -197,8 +260,39 @@ fn roundtrip_freetext_annotation() {
     assert!(result.is_ok(), "save should succeed: {:?}", result.err());
 
     let new_pdf_data = result.unwrap();
+    assert_startxref_points_to_xref(&new_pdf_data);
     let new_pdf = hayro_syntax::Pdf::new(new_pdf_data);
     assert!(new_pdf.is_ok(), "new PDF should be valid");
+}
+
+#[test]
+fn roundtrip_annotation_with_nested_page_dictionary() {
+    let pdf_data = create_pdf_with_nested_page_dict();
+    let highlight = Annotation::Highlight(HighlightAnnot {
+        base: AnnotationBase {
+            rect: [80.0, 680.0, 280.0, 700.0],
+            color: Some(AnnotColor::yellow()),
+            ..Default::default()
+        },
+        quad_points: vec![80.0, 700.0, 280.0, 700.0, 80.0, 680.0, 280.0, 680.0],
+    });
+
+    let result = save_annotations(&pdf_data, &[(0, vec![highlight])]);
+    assert!(
+        result.is_ok(),
+        "save should succeed with nested page dictionary: {:?}",
+        result.err()
+    );
+
+    let new_pdf_data = result.unwrap();
+    assert_startxref_points_to_xref(&new_pdf_data);
+
+    let new_pdf = hayro_syntax::Pdf::new(new_pdf_data).expect("new PDF should be valid");
+    let page = &new_pdf.pages()[0];
+    let annots = page
+        .raw()
+        .get::<hayro_syntax::object::Array<'_>>(hayro_syntax::object::dict::keys::ANNOTS as &[u8]);
+    assert!(annots.is_some(), "page should have /Annots array");
 }
 
 #[test]

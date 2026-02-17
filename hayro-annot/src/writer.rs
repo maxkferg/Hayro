@@ -10,6 +10,7 @@ use crate::types::*;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use pdf_writer::{Chunk, Filter, Finish, Name, Rect, Ref};
+use std::collections::BTreeMap;
 use std::io::Write;
 
 /// An error that occurred during annotation saving.
@@ -237,11 +238,18 @@ pub fn save_annotations(
 
     let mut pdf_bytes = out_pdf.finish();
 
-    // Post-process: inject /Annots references into page dictionaries
+    // Post-process: inject /Annots references into page dictionaries.
+    // This modifies object byte lengths, so we append an updated cross-reference
+    // table/trailer afterwards to keep offsets valid.
     for (page_idx, annots_ref) in &page_annot_arrays {
         let page_ref = page_refs[*page_idx];
-        // Find the page object in the output and inject /Annots
-        inject_annots_into_page(&mut pdf_bytes, page_ref, *annots_ref);
+        if !inject_annots_into_page(&mut pdf_bytes, page_ref, *annots_ref) {
+            return Err(SaveError::InvalidPdf);
+        }
+    }
+
+    if !page_annot_arrays.is_empty() {
+        append_updated_xref_and_trailer(&mut pdf_bytes, catalog_ref);
     }
 
     Ok(pdf_bytes)
@@ -251,27 +259,212 @@ pub fn save_annotations(
 ///
 /// This searches for the page object by its reference number and inserts
 /// the /Annots key before the end of the dictionary.
-fn inject_annots_into_page(pdf_bytes: &mut Vec<u8>, page_ref: Ref, annots_ref: Ref) {
+fn inject_annots_into_page(pdf_bytes: &mut Vec<u8>, page_ref: Ref, annots_ref: Ref) -> bool {
     let page_obj_marker = format!("{} 0 obj", page_ref.get());
     let annots_entry = format!("/Annots {} 0 R", annots_ref.get());
 
     // Find the page object
-    if let Some(obj_pos) = find_bytes(pdf_bytes, page_obj_marker.as_bytes()) {
-        // Find the end of the dictionary (>>) after the object marker
-        let search_start = obj_pos + page_obj_marker.len();
-        if let Some(dict_end) = find_bytes(&pdf_bytes[search_start..], b">>") {
-            let insert_pos = search_start + dict_end;
-            // Insert /Annots entry before >>
-            let insert_bytes = format!("\n  {annots_entry}\n");
-            let insert_bytes = insert_bytes.as_bytes();
+    let Some(obj_pos) = find_bytes(pdf_bytes, page_obj_marker.as_bytes()) else {
+        return false;
+    };
 
-            // Make room and insert
-            let old_len = pdf_bytes.len();
-            pdf_bytes.resize(old_len + insert_bytes.len(), 0);
-            pdf_bytes.copy_within(insert_pos..old_len, insert_pos + insert_bytes.len());
-            pdf_bytes[insert_pos..insert_pos + insert_bytes.len()].copy_from_slice(insert_bytes);
-        }
+    let search_start = obj_pos + page_obj_marker.len();
+    let Some(dict_start_rel) = find_bytes(&pdf_bytes[search_start..], b"<<") else {
+        return false;
+    };
+    let dict_start = search_start + dict_start_rel;
+
+    let Some(dict_end) = find_matching_dict_end(pdf_bytes, dict_start) else {
+        return false;
+    };
+
+    // Don't duplicate /Annots if this page dictionary already has one.
+    if find_bytes(&pdf_bytes[dict_start..dict_end], b"/Annots").is_some() {
+        return true;
     }
+
+    // Insert /Annots before the dictionary's matching closing ">>".
+    let insert_bytes = format!("\n  {annots_entry}\n").into_bytes();
+    let old_len = pdf_bytes.len();
+    pdf_bytes.resize(old_len + insert_bytes.len(), 0);
+    pdf_bytes.copy_within(dict_end..old_len, dict_end + insert_bytes.len());
+    pdf_bytes[dict_end..dict_end + insert_bytes.len()].copy_from_slice(&insert_bytes);
+    true
+}
+
+/// Find the byte index of the matching closing ">>" for a dictionary.
+///
+/// Returns the position of the first '>' in the closing ">>".
+fn find_matching_dict_end(bytes: &[u8], dict_start: usize) -> Option<usize> {
+    let mut idx = dict_start;
+    let mut depth = 0_i32;
+
+    while idx + 1 < bytes.len() {
+        if bytes[idx] == b'<' && bytes[idx + 1] == b'<' {
+            depth += 1;
+            idx += 2;
+            continue;
+        }
+
+        if bytes[idx] == b'>' && bytes[idx + 1] == b'>' {
+            depth -= 1;
+            let close_pos = idx;
+            idx += 2;
+            if depth == 0 {
+                return Some(close_pos);
+            }
+            continue;
+        }
+
+        idx += 1;
+    }
+
+    None
+}
+
+/// Append a fresh xref/trailer section with corrected object offsets.
+///
+/// This keeps the output valid even after post-processing object bytes.
+fn append_updated_xref_and_trailer(pdf_bytes: &mut Vec<u8>, catalog_ref: Ref) {
+    let obj_offsets = collect_object_offsets(pdf_bytes);
+    if obj_offsets.is_empty() {
+        return;
+    }
+
+    let xref_len = 1 + obj_offsets.keys().next_back().copied().unwrap_or(0);
+    let offsets = obj_offsets.iter().map(|(id, offset)| (*id, *offset)).collect::<Vec<_>>();
+    let prev_startxref = find_last_startxref(pdf_bytes);
+
+    let xref_offset = pdf_bytes.len() + 1;
+    pdf_bytes.push(b'\n');
+    pdf_bytes.extend_from_slice(format!("xref\n0 {xref_len}\n").as_bytes());
+
+    // Reconstruct a complete free-list and in-use table (same layout as pdf-writer).
+    let mut written = 0_i32;
+    if offsets.is_empty() {
+        pdf_bytes.extend_from_slice(b"0000000000 65535 f\r\n");
+    }
+
+    for (idx, (object_id, offset)) in offsets.iter().enumerate() {
+        let start = written;
+        for free_id in start..*object_id {
+            let mut next = free_id + 1;
+            if next == *object_id {
+                for (used_id, _) in &offsets[idx..] {
+                    if next < *used_id {
+                        break;
+                    }
+                    next = *used_id + 1;
+                }
+            }
+
+            let generation = if free_id == 0 { "65535" } else { "00000" };
+            pdf_bytes.extend_from_slice(format!("{:010} {} f\r\n", next % xref_len, generation).as_bytes());
+            written += 1;
+        }
+
+        pdf_bytes.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
+        written += 1;
+    }
+
+    pdf_bytes.extend_from_slice(b"trailer\n<<\n");
+    pdf_bytes.extend_from_slice(format!("  /Size {xref_len}\n").as_bytes());
+    pdf_bytes.extend_from_slice(format!("  /Root {} 0 R\n", catalog_ref.get()).as_bytes());
+    if let Some(prev) = prev_startxref {
+        pdf_bytes.extend_from_slice(format!("  /Prev {prev}\n").as_bytes());
+    }
+    pdf_bytes.extend_from_slice(b">>\n");
+    pdf_bytes.extend_from_slice(b"startxref\n");
+    pdf_bytes.extend_from_slice(format!("{xref_offset}\n").as_bytes());
+    pdf_bytes.extend_from_slice(b"%%EOF");
+}
+
+/// Collect all indirect object offsets by scanning object headers.
+fn collect_object_offsets(pdf_bytes: &[u8]) -> BTreeMap<i32, usize> {
+    let mut offsets = BTreeMap::new();
+    let mut line_start = 0;
+    let mut idx = 0;
+
+    while idx <= pdf_bytes.len() {
+        let line_end = idx == pdf_bytes.len() || pdf_bytes[idx] == b'\n' || pdf_bytes[idx] == b'\r';
+        if !line_end {
+            idx += 1;
+            continue;
+        }
+
+        if let Some(id) = parse_obj_header(&pdf_bytes[line_start..idx]) {
+            offsets.insert(id, line_start);
+        }
+
+        if idx < pdf_bytes.len()
+            && pdf_bytes[idx] == b'\r'
+            && idx + 1 < pdf_bytes.len()
+            && pdf_bytes[idx + 1] == b'\n'
+        {
+            idx += 2;
+            line_start = idx;
+            continue;
+        }
+
+        idx += 1;
+        line_start = idx;
+    }
+
+    offsets
+}
+
+/// Parse an indirect object header line like "12 0 obj".
+fn parse_obj_header(line: &[u8]) -> Option<i32> {
+    let mut i = 0;
+    while i < line.len() && line[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    if i >= line.len() || !line[i].is_ascii_digit() {
+        return None;
+    }
+
+    let id_start = i;
+    while i < line.len() && line[i].is_ascii_digit() {
+        i += 1;
+    }
+    let id = std::str::from_utf8(&line[id_start..i]).ok()?.parse::<i32>().ok()?;
+
+    if i + 6 > line.len() || &line[i..i + 6] != b" 0 obj" {
+        return None;
+    }
+    i += 6;
+
+    while i < line.len() {
+        if !line[i].is_ascii_whitespace() {
+            return None;
+        }
+        i += 1;
+    }
+
+    Some(id)
+}
+
+/// Parse the last startxref value from the current PDF bytes.
+fn find_last_startxref(pdf_bytes: &[u8]) -> Option<usize> {
+    let marker = b"startxref";
+    let marker_pos = pdf_bytes.windows(marker.len()).rposition(|w| w == marker)?;
+    let mut idx = marker_pos + marker.len();
+
+    while idx < pdf_bytes.len() && pdf_bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+
+    let start = idx;
+    while idx < pdf_bytes.len() && pdf_bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+
+    if start == idx {
+        return None;
+    }
+
+    std::str::from_utf8(&pdf_bytes[start..idx]).ok()?.parse().ok()
 }
 
 /// Find the position of a byte pattern in a byte slice.
