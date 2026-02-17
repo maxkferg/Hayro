@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/hayro.svg)](https://crates.io/crates/hayro)
 [![Documentation](https://docs.rs/hayro/badge.svg)](https://docs.rs/hayro)
 
-An experimental, work-in-progress PDF interpreter and renderer.
+An experimental, work-in-progress PDF interpreter, renderer, and annotation editor.
 
 `hayro` is a Rust crate with a simple task: It allows you to interpret one or many pages of a PDF file to for example convert them into PNG or SVG files. This is a difficult task, as the PDF specification is _huge_ and contains many features. In addition to that, there are millions of PDF files out there with many edge cases, so a solid PDF renderer should be able to handle those as well as possible.
 
@@ -12,18 +12,57 @@ This is not the first attempt at writing a PDF renderer in Rust, but, to the bes
 But, this crate is still in a very development stage, and there are issues that remain to be addressed, most notably performance, which has not been a focus at all so far but will become a priority in the near future.
 
 ## Crates
-While the main goal of `hayro` is rendering PDF files, the `hayro` project actually encompasses a number of different crates which can in theory used independently. These include:
+While the main goal of `hayro` is rendering PDF files, the `hayro` project actually encompasses a number of different crates which can in theory be used independently. These include:
+
+### Core
 - [`hayro-syntax`](hayro-syntax): Low-level parsing and reading of PDF files.
 - [`hayro-interpret`](hayro-interpret): A PDF interpreter emitting commands into an abstract `Device`.
 - [`hayro`](hayro): Rendering PDF pages into bitmaps.
+- [`hayro-write`](hayro-write): Re-writing PDF pages as new pages or XObjects.
+
+### Annotation Editing
+- [`hayro-annot`](hayro-annot): Creating and writing PDF annotations. Supports highlight, underline, strikeout, squiggly, free text, ink (freehand), square, circle, line, sticky note, and link annotations — with appearance stream generation and a save pipeline.
+
+### Output Formats
 - [`hayro-svg`](hayro-svg): Converting PDF pages into SVG images.
+
+### Image Decoders
 - [`hayro-jpeg2000`](hayro-jpeg2000): A JPEG2000 image decoder.
 - [`hayro-jbig2`](hayro-jbig2): A JBIG2 image decoder (this crate is still WIP and not recommended for external consumption
   yet, but it already is completely functional).
 - [`hayro-ccitt`](hayro-ccitt): A decoder for group 3 and group 4 CCITT-encoded images.
+
+### Font & Text
 - [`hayro-font`](hayro-font): A parser for Type1 and CFF fonts.
 - [`hayro-postscript`](hayro-postscript): A lightweight scanner for a specific subset of PostScript.
 - [`hayro-cmap`](hayro-cmap): A parser for CMap files in PDFs.
 
 ## Demo
-A demo tool can be found at https://laurenzv.github.io/hayro/. Please note that this is not intended to be a PDF viewer application: It misses many important features like zooming, selecting text and important optimizations for improving the user experience. It's really just meant as a quick way to test the rendering capabilities of `hayro`.
+A demo tool can be found at https://maxkferg.github.io/Hayro/. The demo includes:
+- **PDF rendering** — drop a PDF file to view it in the browser.
+- **Annotation editing** — use the toolbar to add highlights, rectangles, freehand drawings, and text annotations.
+- **Save** — download the annotated PDF with all annotations embedded.
+
+### Annotation Tools
+| Tool | Shortcut | Description |
+|------|----------|-------------|
+| Select | `V` | Default cursor mode |
+| Highlight | `H` | Draw a semi-transparent highlight over a region |
+| Rectangle | `R` | Draw a rectangle annotation |
+| Pencil | `P` | Freehand ink drawing |
+| Text | `T` | Click to place a text annotation |
+| Undo | `Ctrl+Z` | Remove the last annotation |
+
+Five colors are available: yellow, red, blue, green, and black.
+
+### Building the Demo
+The demo compiles to WebAssembly and can be served as a static site:
+```bash
+cd hayro-demo
+bash build.sh
+python3 -m http.server 8000 --directory dist
+```
+
+This requires [wasm-pack](https://rustwasm.github.io/wasm-pack/) and a Rust nightly toolchain.
+
+The demo is also automatically deployed to GitHub Pages on push to `main` via the `deploy-pages.yml` workflow.
