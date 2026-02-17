@@ -116,9 +116,9 @@ pub(crate) fn parse_inner<'a>(
     }
 
     // Since we will use binary search for finding the correct entry, sort now.
-    ranges.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-    notdef_ranges.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-    bf_entries.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+    ranges.sort_by_key(|a| a.range.start);
+    notdef_ranges.sort_by_key(|a| a.range.start);
+    bf_entries.sort_by_key(|a| a.range.start);
 
     // See PDFJS-3323, which has an invalid CIDSystemInfo entry.
     // We ignore it if it's invalid.

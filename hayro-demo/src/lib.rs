@@ -220,13 +220,7 @@ impl PdfViewer {
     /// Add a highlight annotation to the current page.
     /// quad_points: flat array of coordinates [x1,y1,x2,y2,...] in PDF space.
     #[wasm_bindgen]
-    pub fn add_highlight(
-        &mut self,
-        quad_points: &[f32],
-        r: f32,
-        g: f32,
-        b: f32,
-    ) -> bool {
+    pub fn add_highlight(&mut self, quad_points: &[f32], r: f32, g: f32, b: f32) -> bool {
         if self.pdf.is_none() {
             return false;
         }
@@ -252,14 +246,7 @@ impl PdfViewer {
     /// Add an ink (freehand) annotation to the current page.
     /// points: flat array [x1,y1,x2,y2,...] in PDF space.
     #[wasm_bindgen]
-    pub fn add_ink(
-        &mut self,
-        points: &[f32],
-        r: f32,
-        g: f32,
-        b: f32,
-        line_width: f32,
-    ) -> bool {
+    pub fn add_ink(&mut self, points: &[f32], r: f32, g: f32, b: f32, line_width: f32) -> bool {
         if self.pdf.is_none() || points.len() < 4 {
             return false;
         }

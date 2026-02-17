@@ -184,7 +184,12 @@ pub fn generate_square_appearance(annot: &ShapeAnnot) -> Vec<u8> {
     if let Some(ic) = &annot.interior_color {
         content
             .set_fill_rgb(ic.r, ic.g, ic.b)
-            .rect(half_lw, half_lw, width - annot.line_width, height - annot.line_width)
+            .rect(
+                half_lw,
+                half_lw,
+                width - annot.line_width,
+                height - annot.line_width,
+            )
             .fill_nonzero();
     }
 
@@ -192,7 +197,12 @@ pub fn generate_square_appearance(annot: &ShapeAnnot) -> Vec<u8> {
     content
         .set_stroke_rgb(color.r, color.g, color.b)
         .set_line_width(annot.line_width)
-        .rect(half_lw, half_lw, width - annot.line_width, height - annot.line_width)
+        .rect(
+            half_lw,
+            half_lw,
+            width - annot.line_width,
+            height - annot.line_width,
+        )
         .stroke();
 
     content.finish().into_vec()
