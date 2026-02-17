@@ -1,3 +1,6 @@
+mod geometry;
+mod operations;
+
 use console_error_panic_hook;
 use hayro::RenderSettings;
 use hayro::hayro_interpret::{InterpreterSettings, extract_text_spans};
@@ -7,9 +10,11 @@ use hayro_annot::{
     SignatureFieldAnnot, TextFieldAnnot,
 };
 use js_sys;
-use std::collections::BTreeMap;
+use operations::{OperationHistory, ViewerOperation};
 use vello_cpu::color::palette::css::WHITE;
 use wasm_bindgen::prelude::*;
+
+use crate::geometry::{rect_from_points, rect_from_quad_points};
 
 struct ConsoleLogger;
 
@@ -57,20 +62,13 @@ impl log::Log for ConsoleLogger {
 
 static LOGGER: ConsoleLogger = ConsoleLogger;
 
-#[derive(Clone)]
-struct ViewerOperation {
-    page: usize,
-    annotation: Annotation,
-}
-
 #[wasm_bindgen]
 pub struct PdfViewer {
     pdf: Option<Pdf>,
     pdf_data: Vec<u8>,
     current_page: usize,
     total_pages: usize,
-    operations: Vec<ViewerOperation>,
-    redo_stack: Vec<ViewerOperation>,
+    history: OperationHistory,
 }
 
 #[wasm_bindgen]
@@ -88,8 +86,7 @@ impl PdfViewer {
             pdf_data: Vec::new(),
             current_page: 0,
             total_pages: 0,
-            operations: Vec::new(),
-            redo_stack: Vec::new(),
+            history: OperationHistory::default(),
         }
     }
 
@@ -103,8 +100,7 @@ impl PdfViewer {
         self.pdf_data = data.to_vec();
         self.pdf = Some(pdf);
         self.current_page = 0;
-        self.operations.clear();
-        self.redo_stack.clear();
+        self.history.clear();
 
         Ok(())
     }
@@ -525,8 +521,7 @@ impl PdfViewer {
     /// Remove the last annotation added to the current page (undo).
     #[wasm_bindgen]
     pub fn undo_annotation(&mut self) -> bool {
-        if let Some(last) = self.operations.pop() {
-            self.redo_stack.push(last);
+        if self.history.undo() {
             self.rebuild_pdf_with_operations();
             return true;
         }
@@ -537,8 +532,7 @@ impl PdfViewer {
     /// Re-apply the last undone annotation/form operation.
     #[wasm_bindgen]
     pub fn redo_annotation(&mut self) -> bool {
-        if let Some(op) = self.redo_stack.pop() {
-            self.operations.push(op);
+        if self.history.redo() {
             self.rebuild_pdf_with_operations();
             return true;
         }
@@ -553,12 +547,12 @@ impl PdfViewer {
             return Err(JsValue::from_str("No PDF loaded"));
         }
 
-        if self.operations.is_empty() {
+        if self.history.is_empty() {
             // No annotations — return original data
             return Ok(self.pdf_data.clone());
         }
 
-        let page_annots = self.grouped_operations();
+        let page_annots = self.history.grouped_operations();
 
         hayro_annot::save_annotations(&self.pdf_data, &page_annots)
             .map_err(|e| JsValue::from_str(&format!("Save failed: {e}")))
@@ -567,42 +561,38 @@ impl PdfViewer {
     /// Get the number of pending annotations on the current page.
     #[wasm_bindgen]
     pub fn get_annotation_count(&self) -> usize {
-        self.operations
-            .iter()
-            .filter(|op| op.page == self.current_page)
-            .count()
+        self.history.page_count(self.current_page)
     }
 
     /// Get total operation count across all pages.
     #[wasm_bindgen]
     pub fn get_operation_count(&self) -> usize {
-        self.operations.len()
+        self.history.operation_count()
     }
 
     /// Get redo stack size.
     #[wasm_bindgen]
     pub fn get_redo_count(&self) -> usize {
-        self.redo_stack.len()
+        self.history.redo_count()
     }
 
     fn add_annotation_to_page(&mut self, annot: Annotation) {
-        self.operations.push(ViewerOperation {
+        self.history.push(ViewerOperation {
             page: self.current_page,
             annotation: annot,
         });
-        self.redo_stack.clear();
         self.rebuild_pdf_with_operations();
     }
 
     fn rebuild_pdf_with_operations(&mut self) {
-        if self.operations.is_empty() {
+        if self.history.is_empty() {
             if let Ok(new_pdf) = Pdf::new(self.pdf_data.clone()) {
                 self.pdf = Some(new_pdf);
             }
             return;
         }
 
-        let page_annots = self.grouped_operations();
+        let page_annots = self.history.grouped_operations();
 
         match hayro_annot::save_annotations(&self.pdf_data, &page_annots) {
             Ok(new_data) => {
@@ -616,17 +606,6 @@ impl PdfViewer {
         }
     }
 
-    fn grouped_operations(&self) -> Vec<(usize, Vec<Annotation>)> {
-        let mut grouped = BTreeMap::<usize, Vec<Annotation>>::new();
-        for op in &self.operations {
-            grouped
-                .entry(op.page)
-                .or_default()
-                .push(op.annotation.clone());
-        }
-        grouped.into_iter().collect()
-    }
-
     fn page_index_from_one_based(&self, page: usize) -> Result<usize, JsValue> {
         if page == 0 || page > self.total_pages {
             Err(JsValue::from_str("Page out of bounds"))
@@ -636,51 +615,3 @@ impl PdfViewer {
     }
 }
 
-/// Calculate a bounding rect from quad points.
-fn rect_from_quad_points(quad_points: &[f32]) -> [f32; 4] {
-    if quad_points.len() < 8 {
-        return [0.0, 0.0, 0.0, 0.0];
-    }
-
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
-
-    for chunk in quad_points.chunks(2) {
-        if chunk.len() == 2 {
-            min_x = min_x.min(chunk[0]);
-            min_y = min_y.min(chunk[1]);
-            max_x = max_x.max(chunk[0]);
-            max_y = max_y.max(chunk[1]);
-        }
-    }
-
-    [min_x, min_y, max_x, max_y]
-}
-
-/// Calculate a bounding rect from a list of points with padding.
-fn rect_from_points(points: &[[f32; 2]], padding: f32) -> [f32; 4] {
-    if points.is_empty() {
-        return [0.0, 0.0, 0.0, 0.0];
-    }
-
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
-
-    for p in points {
-        min_x = min_x.min(p[0]);
-        min_y = min_y.min(p[1]);
-        max_x = max_x.max(p[0]);
-        max_y = max_y.max(p[1]);
-    }
-
-    [
-        min_x - padding,
-        min_y - padding,
-        max_x + padding,
-        max_y + padding,
-    ]
-}

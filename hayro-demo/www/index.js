@@ -1,7 +1,6 @@
 import init, { PdfViewer } from './hayro_demo.js';
+import { ZOOM_MAX, ZOOM_MIN, clampZoom, pdfToScreen, screenToPdf } from './viewer_math.js';
 
-const ZOOM_MIN = 0.25;
-const ZOOM_MAX = 5.0;
 const ZOOM_STEP = 0.1;
 
 const state = {
@@ -478,11 +477,6 @@ function setTool(tool) {
     }
 }
 
-function clampZoom(value) {
-    if (!Number.isFinite(value)) return state.zoom;
-    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
-}
-
 function setZoom(zoom) {
     if (!state.pdfViewer) return;
     const clamped = clampZoom(zoom);
@@ -633,54 +627,14 @@ function renderTextLayer(page, node) {
 
 function pdfRectToScreen(pageInfo, x0, y0, x1, y1) {
     const corners = [
-        pdfToScreen(pageInfo, x0, y0),
-        pdfToScreen(pageInfo, x1, y0),
-        pdfToScreen(pageInfo, x0, y1),
-        pdfToScreen(pageInfo, x1, y1),
+        pdfToScreen(pageInfo, state.zoom, x0, y0),
+        pdfToScreen(pageInfo, state.zoom, x1, y0),
+        pdfToScreen(pageInfo, state.zoom, x0, y1),
+        pdfToScreen(pageInfo, state.zoom, x1, y1),
     ];
     const xs = corners.map((entry) => entry[0]);
     const ys = corners.map((entry) => entry[1]);
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-}
-
-function pdfToScreen(pageInfo, pdfX, pdfY) {
-    const cropX0 = pageInfo[2];
-    const cropY0 = pageInfo[3];
-    const cropX1 = pageInfo[4];
-    const cropY1 = pageInfo[5];
-    const rotation = pageInfo[6];
-
-    if (rotation === 0) {
-        return [(pdfX - cropX0) * state.zoom, (cropY1 - pdfY) * state.zoom];
-    }
-    if (rotation === 90) {
-        return [(pdfY - cropY0) * state.zoom, (pdfX - cropX0) * state.zoom];
-    }
-    if (rotation === 180) {
-        return [(cropX1 - pdfX) * state.zoom, (pdfY - cropY0) * state.zoom];
-    }
-    return [(cropY1 - pdfY) * state.zoom, (cropX1 - pdfX) * state.zoom];
-}
-
-function screenToPdf(pageInfo, screenX, screenY) {
-    const cropX0 = pageInfo[2];
-    const cropY0 = pageInfo[3];
-    const cropX1 = pageInfo[4];
-    const cropY1 = pageInfo[5];
-    const rotation = pageInfo[6];
-    const ptsX = screenX / state.zoom;
-    const ptsY = screenY / state.zoom;
-
-    if (rotation === 0) {
-        return [cropX0 + ptsX, cropY1 - ptsY];
-    }
-    if (rotation === 90) {
-        return [cropX0 + ptsY, cropY0 + ptsX];
-    }
-    if (rotation === 180) {
-        return [cropX1 - ptsX, cropY0 + ptsY];
-    }
-    return [cropX1 - ptsY, cropY1 - ptsX];
 }
 
 function ensureCurrentPage(page) {
@@ -692,8 +646,8 @@ function ensureCurrentPage(page) {
 function addHighlightAnnotation(page, sx0, sy0, sx1, sy1) {
     if (!state.pdfViewer || !ensureCurrentPage(page)) return;
     const pageInfo = state.pageInfos[page - 1];
-    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
-    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    const [x0, y0] = screenToPdf(pageInfo, state.zoom, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, state.zoom, sx1, sy1);
     const minX = Math.min(x0, x1);
     const maxX = Math.max(x0, x1);
     const minY = Math.min(y0, y1);
@@ -706,8 +660,8 @@ function addHighlightAnnotation(page, sx0, sy0, sx1, sy1) {
 function addRectangleAnnotation(page, sx0, sy0, sx1, sy1) {
     if (!state.pdfViewer || !ensureCurrentPage(page)) return;
     const pageInfo = state.pageInfos[page - 1];
-    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
-    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    const [x0, y0] = screenToPdf(pageInfo, state.zoom, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, state.zoom, sx1, sy1);
     state.pdfViewer.add_rectangle(x0, y0, x1, y1, state.color[0], state.color[1], state.color[2]);
     refreshAfterMutation();
 }
@@ -717,7 +671,7 @@ function addInkAnnotation(page, points) {
     const pageInfo = state.pageInfos[page - 1];
     const mapped = [];
     for (const [x, y] of points) {
-        const [px, py] = screenToPdf(pageInfo, x, y);
+        const [px, py] = screenToPdf(pageInfo, state.zoom, x, y);
         mapped.push(px, py);
     }
     state.pdfViewer.add_ink(new Float32Array(mapped), state.color[0], state.color[1], state.color[2], 2.0);
@@ -727,7 +681,7 @@ function addInkAnnotation(page, points) {
 function addTextAnnotation(page, screenX, screenY, text) {
     if (!state.pdfViewer || !ensureCurrentPage(page)) return;
     const pageInfo = state.pageInfos[page - 1];
-    const [x, y] = screenToPdf(pageInfo, screenX, screenY);
+    const [x, y] = screenToPdf(pageInfo, state.zoom, screenX, screenY);
     const fontSize = 12;
     const width = Math.max(100, text.length * fontSize * 0.58);
     const height = fontSize * 2;
@@ -741,8 +695,8 @@ function addTextField(page, sx0, sy0, sx1, sy1) {
     if (!name || !name.trim()) return;
     const value = window.prompt('Initial value (optional)') ?? '';
     const pageInfo = state.pageInfos[page - 1];
-    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
-    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    const [x0, y0] = screenToPdf(pageInfo, state.zoom, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, state.zoom, sx1, sy1);
     state.pdfViewer.add_text_field(x0, y0, x1, y1, name.trim(), value);
     refreshAfterMutation();
 }
@@ -752,8 +706,8 @@ function addSignatureField(page, sx0, sy0, sx1, sy1) {
     const name = window.prompt('Signature field name');
     if (!name || !name.trim()) return;
     const pageInfo = state.pageInfos[page - 1];
-    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
-    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    const [x0, y0] = screenToPdf(pageInfo, state.zoom, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, state.zoom, sx1, sy1);
     state.pdfViewer.add_signature_field(x0, y0, x1, y1, name.trim());
     refreshAfterMutation();
 }

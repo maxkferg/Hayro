@@ -16,6 +16,7 @@ echo "Copying static files..."
 cp www/index.html dist/
 cp www/styles.css dist/
 cp www/index.js dist/
+cp www/viewer_math.js dist/
 
 # Copy generated WASM files
 echo "Copying WASM files..."

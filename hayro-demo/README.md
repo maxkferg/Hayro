@@ -32,3 +32,11 @@ wasm-pack build --target web --out-dir www
 ```
 
 Then serve `www` with a static file server.
+
+## Lightweight JS unit tests
+
+From repository root:
+
+```bash
+node --test hayro-demo/tests-js/viewer_math.test.js
+```
