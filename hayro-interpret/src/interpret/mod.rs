@@ -14,9 +14,9 @@ use crate::util::{OptionLog, RectExt};
 use crate::x_object::{
     FormXObject, ImageXObject, XObject, draw_form_xobject, draw_image_xobject, draw_xobject,
 };
-use crate::{CacheKey, FillRule};
+use crate::{BlendMode, CacheKey, FillRule};
 use hayro_syntax::content::ops::TypedInstruction;
-use hayro_syntax::object::dict::keys::{ANNOTS, AP, F, N, OC, RECT};
+use hayro_syntax::object::dict::keys::{ANNOTS, AP, AS, C, CA, F, N, OC, RECT, SUBTYPE};
 use hayro_syntax::object::{Array, Dict, Object, Rect, Stream, dict_or_stream};
 use hayro_syntax::page::{Page, Resources};
 use kurbo::{Affine, Point, Shape};
@@ -145,71 +145,187 @@ pub fn interpret_page<'a>(
         && let Some(annot_arr) = page.raw().get::<Array<'_>>(ANNOTS)
     {
         for annot in annot_arr.iter::<Dict<'_>>() {
-            let flags = annot.get::<u32>(F).unwrap_or(0);
+            render_annotation(&annot, resources, context, device);
+        }
+    }
+}
 
-            // Annotation should be hidden.
-            if flags & 2 != 0 {
-                continue;
-            }
+/// Render a single annotation.
+fn render_annotation<'a>(
+    annot: &Dict<'a>,
+    resources: &Resources<'a>,
+    context: &mut Context<'a>,
+    device: &mut impl Device<'a>,
+) {
+    let flags = annot.get::<u32>(F).unwrap_or(0);
 
-            if let Some(apx) = annot
-                .get::<Dict<'_>>(AP)
-                .and_then(|ap| ap.get::<Stream<'_>>(N))
-                .and_then(|o| FormXObject::new(&o))
-            {
-                let Some(rect) = annot.get::<Rect>(RECT) else {
-                    continue;
-                };
+    // Annotation should be hidden (bit 1, value 2).
+    if flags & 2 != 0 {
+        return;
+    }
 
-                let annot_rect = rect.to_kurbo();
-                // 12.5.5. Appearance streams
-                // "The algorithm outlined in this subclause shall be used
-                // to map from the coordinate system of the appearance XObject."
-
-                // 1) The appearance’s bounding box (specified by its BBox entry)
-                // shall be transformed, using Matrix, to produce a
-                // quadrilateral with arbitrary orientation. The transformed
-                // appearance box is the smallest upright rectangle that
-                // encompasses this quadrilateral.
-                let transformed_rect = (apx.matrix
-                    * kurbo::Rect::new(
-                        apx.bbox[0] as f64,
-                        apx.bbox[1] as f64,
-                        apx.bbox[2] as f64,
-                        apx.bbox[3] as f64,
-                    )
-                    .to_path(0.1))
-                .bounding_box();
-
-                // 2) A matrix A shall be computed that scales and translates
-                // the transformed appearance box to align with the edges
-                // of the annotation’s rectangle (specified by the Rect entry).
-                // A maps the lower-left corner (the corner with the smallest
-                // x and y coordinates) and the upper-right corner (the
-                // corner with the greatest x and y coordinates) of the
-                // transformed appearance box to the corresponding corners
-                // of the annotation’s rectangle.
-                let affine = Affine::new([
-                    annot_rect.width() / transformed_rect.width(),
-                    0.0,
-                    0.0,
-                    annot_rect.height() / transformed_rect.height(),
-                    annot_rect.x0 - transformed_rect.x0,
-                    annot_rect.y0 - transformed_rect.y0,
-                ]);
-
-                // 3) Matrix shall be concatenated with A to form a matrix
-                // AA that maps from the appearance’s coordinate system to
-                // the annotation’s rectangle in default user space.
-                context.save_state();
-                context.pre_concat_affine(affine);
-                context.push_root_transform();
-
-                draw_form_xobject(resources, &apx, context, device);
-                context.pop_root_transform();
-                context.restore_state(device);
+    // Try to resolve the appearance stream.
+    // /AP → /N can be a direct stream or a dictionary of states.
+    let ap_stream = annot.get::<Dict<'_>>(AP).and_then(|ap| {
+        if let Some(stream) = ap.get::<Stream<'_>>(N) {
+            return Some(stream);
+        }
+        // /N as dictionary: use /AS to select the right state.
+        if let Some(n_dict) = ap.get::<Dict<'_>>(N) {
+            if let Some(as_name) = annot.get::<hayro_syntax::object::Name>(AS) {
+                return n_dict.get::<Stream<'_>>(as_name.as_ref());
             }
         }
+        None
+    });
+
+    if let Some(stream) = ap_stream
+        && let Some(apx) = FormXObject::new(&stream)
+    {
+        let Some(rect) = annot.get::<Rect>(RECT) else {
+            return;
+        };
+
+        let opacity = annot.get::<f32>(CA).unwrap_or(1.0).clamp(0.0, 1.0);
+        let annot_rect = rect.to_kurbo();
+
+        // 12.5.5. Appearance streams
+        let transformed_rect = (apx.matrix
+            * kurbo::Rect::new(
+                apx.bbox[0] as f64,
+                apx.bbox[1] as f64,
+                apx.bbox[2] as f64,
+                apx.bbox[3] as f64,
+            )
+            .to_path(0.1))
+        .bounding_box();
+
+        let affine = Affine::new([
+            annot_rect.width() / transformed_rect.width(),
+            0.0,
+            0.0,
+            annot_rect.height() / transformed_rect.height(),
+            annot_rect.x0 - transformed_rect.x0,
+            annot_rect.y0 - transformed_rect.y0,
+        ]);
+
+        context.save_state();
+        context.pre_concat_affine(affine);
+        context.push_root_transform();
+
+        if opacity < 1.0 {
+            device.push_transparency_group(opacity, None, BlendMode::Normal);
+        }
+
+        draw_form_xobject(resources, &apx, context, device);
+
+        if opacity < 1.0 {
+            device.pop_transparency_group();
+        }
+
+        context.pop_root_transform();
+        context.restore_state(device);
+    } else {
+        render_annotation_fallback(annot, context, device);
+    }
+}
+
+/// Extract annotation color from /C key, with default fallback.
+fn get_annot_color(annot: &Dict<'_>, def_r: f32, def_g: f32, def_b: f32) -> (f32, f32, f32) {
+    if let Some(c_arr) = annot.get::<Array<'_>>(C) {
+        let mut iter = c_arr.iter::<f32>();
+        let r = iter.next().unwrap_or(def_r);
+        let g = iter.next().unwrap_or(def_g);
+        let b = iter.next().unwrap_or(def_b);
+        (r, g, b)
+    } else {
+        (def_r, def_g, def_b)
+    }
+}
+
+/// Fallback rendering for annotations without appearance streams.
+fn render_annotation_fallback<'a>(
+    annot: &Dict<'a>,
+    context: &mut Context<'a>,
+    device: &mut impl Device<'a>,
+) {
+    let Some(rect) = annot.get::<Rect>(RECT) else {
+        return;
+    };
+
+    let subtype = annot
+        .get::<hayro_syntax::object::Name>(SUBTYPE)
+        .map(|n| n.as_ref().to_vec());
+
+    let annot_rect = rect.to_kurbo();
+    if annot_rect.width() < 0.1 || annot_rect.height() < 0.1 {
+        return;
+    }
+
+    match subtype.as_deref() {
+        Some(b"Highlight") => {
+            let color = get_annot_color(annot, 1.0, 1.0, 0.0);
+            let opacity = annot.get::<f32>(CA).unwrap_or(0.4).clamp(0.0, 1.0);
+
+            context.save_state();
+            context.push_root_transform();
+            device.push_transparency_group(opacity, None, BlendMode::Multiply);
+
+            let path = annot_rect.to_path(0.1);
+            let paint = crate::Paint::Color(crate::color::Color::new(
+                ColorSpace::device_rgb(),
+                smallvec![color.0, color.1, color.2],
+                opacity,
+            ));
+            device.draw_path(
+                &path,
+                context.get().ctm,
+                &paint,
+                &crate::PathDrawMode::Fill(FillRule::NonZero),
+            );
+
+            device.pop_transparency_group();
+            context.pop_root_transform();
+            context.restore_state(device);
+        }
+        Some(b"Underline") | Some(b"StrikeOut") => {
+            let color = get_annot_color(annot, 1.0, 0.0, 0.0);
+            let is_strikeout = subtype.as_deref() == Some(b"StrikeOut");
+
+            context.save_state();
+            context.push_root_transform();
+
+            let y = if is_strikeout {
+                (annot_rect.y0 + annot_rect.y1) / 2.0
+            } else {
+                annot_rect.y0
+            };
+
+            let mut path = kurbo::BezPath::new();
+            path.move_to(Point::new(annot_rect.x0, y));
+            path.line_to(Point::new(annot_rect.x1, y));
+
+            let paint = crate::Paint::Color(crate::color::Color::new(
+                ColorSpace::device_rgb(),
+                smallvec![color.0, color.1, color.2],
+                1.0,
+            ));
+
+            let stroke = crate::StrokeProps {
+                line_width: 1.0,
+                ..Default::default()
+            };
+            device.draw_path(
+                &path,
+                context.get().ctm,
+                &paint,
+                &crate::PathDrawMode::Stroke(stroke),
+            );
+
+            context.pop_root_transform();
+            context.restore_state(device);
+        }
+        _ => {}
     }
 }
 
