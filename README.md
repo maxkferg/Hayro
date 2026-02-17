@@ -17,6 +17,8 @@ While the main goal of `hayro` is rendering PDF files, the `hayro` project actua
 - [`hayro-interpret`](hayro-interpret): A PDF interpreter emitting commands into an abstract `Device`.
 - [`hayro`](hayro): Rendering PDF pages into bitmaps.
 - [`hayro-svg`](hayro-svg): Converting PDF pages into SVG images.
+- [`hayro-write`](hayro-write): Writing and editing PDF files.
+- [`hayro-annot`](hayro-annot): Annotation support and related data structures.
 - [`hayro-jpeg2000`](hayro-jpeg2000): A JPEG2000 image decoder.
 - [`hayro-jbig2`](hayro-jbig2): A JBIG2 image decoder (this crate is still WIP and not recommended for external consumption
   yet, but it already is completely functional).
@@ -24,6 +26,31 @@ While the main goal of `hayro` is rendering PDF files, the `hayro` project actua
 - [`hayro-font`](hayro-font): A parser for Type1 and CFF fonts.
 - [`hayro-postscript`](hayro-postscript): A lightweight scanner for a specific subset of PostScript.
 - [`hayro-cmap`](hayro-cmap): A parser for CMap files in PDFs.
+- [`hayro-demo`](hayro-demo): A WASM-based demo application.
+- [`hayro-tests`](hayro-tests): Regression tests and PDF test corpus.
+- [`hayro-fuzz`](hayro-fuzz): Fuzzing targets used to harden parsing and rendering.
+
+## Folder structure
+```text
+.
+├── hayro/             # Main renderer crate
+├── hayro-interpret/   # PDF interpretation layer
+├── hayro-syntax/      # Low-level PDF parser
+├── hayro-svg/         # SVG output backend
+├── hayro-write/       # PDF writing/editing utilities
+├── hayro-annot/       # Annotation support
+├── hayro-jpeg2000/    # JPEG2000 decoder
+├── hayro-jbig2/       # JBIG2 decoder
+├── hayro-ccitt/       # CCITT decoder
+├── hayro-font/        # Type1/CFF font parsing
+├── hayro-postscript/  # PostScript subset scanner
+├── hayro-cmap/        # CMap parser
+├── hayro-demo/        # WASM demo app
+├── hayro-tests/       # Regression tests and fixtures
+├── hayro-fuzz/        # Fuzz targets
+├── assets/            # Shared assets and resources
+└── .github/           # CI and deployment workflows
+```
 
 ## Demo
-A demo tool can be found at https://laurenzv.github.io/hayro/. Please note that this is not intended to be a PDF viewer application: It misses many important features like zooming, selecting text and important optimizations for improving the user experience. It's really just meant as a quick way to test the rendering capabilities of `hayro`.
+A demo tool can be found at https://maxkferg.github.io/Hayro/. Please note that this is not intended to be a PDF viewer application: It misses many important features like zooming, selecting text and important optimizations for improving the user experience. It's really just meant as a quick way to test the rendering capabilities of `hayro`.
