@@ -1,8 +1,10 @@
+//! Integration tests for annotation write/read roundtrips.
+
 use hayro_annot::*;
 
 /// Create a minimal blank PDF using pdf-writer for testing.
 fn create_blank_pdf() -> Vec<u8> {
-    use pdf_writer::{Finish, Name, Pdf, Rect, Ref};
+    use pdf_writer::{Finish, Pdf, Rect, Ref};
 
     let catalog_id = Ref::new(1);
     let page_tree_id = Ref::new(2);
