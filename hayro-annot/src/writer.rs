@@ -276,9 +276,7 @@ fn inject_annots_into_page(pdf_bytes: &mut Vec<u8>, page_ref: Ref, annots_ref: R
 
 /// Find the position of a byte pattern in a byte slice.
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Write an annotation dictionary to a chunk.
@@ -298,7 +296,9 @@ fn write_annotation_dict(
         base.rect[2],
         base.rect[3],
     ));
-    annot_dict.flags(pdf_writer::types::AnnotationFlags::from_bits_truncate(base.flags));
+    annot_dict.flags(pdf_writer::types::AnnotationFlags::from_bits_truncate(
+        base.flags,
+    ));
 
     if let Some(color) = &base.color {
         annot_dict.color_rgb(color.r, color.g, color.b);

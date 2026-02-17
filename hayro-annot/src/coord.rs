@@ -138,14 +138,8 @@ mod tests {
     #[test]
     fn screen_rect_normalized() {
         let crop_box = [0.0, 0.0, 595.0, 842.0];
-        let result = screen_rect_to_pdf_rect(
-            [10.0, 10.0, 100.0, 100.0],
-            595.0,
-            842.0,
-            crop_box,
-            0,
-            1.0,
-        );
+        let result =
+            screen_rect_to_pdf_rect([10.0, 10.0, 100.0, 100.0], 595.0, 842.0, crop_box, 0, 1.0);
         // x0 < x1, y0 < y1
         assert!(result[0] < result[2], "x0 < x1: {:?}", result);
         assert!(result[1] < result[3], "y0 < y1: {:?}", result);

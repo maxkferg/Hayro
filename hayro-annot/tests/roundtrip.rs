@@ -39,20 +39,25 @@ fn roundtrip_highlight_annotation() {
             contents: Some("Test highlight".to_string()),
             ..Default::default()
         },
-        quad_points: vec![
-            100.0, 720.0, 300.0, 720.0, 100.0, 700.0, 300.0, 700.0,
-        ],
+        quad_points: vec![100.0, 720.0, 300.0, 720.0, 100.0, 700.0, 300.0, 700.0],
     });
 
     let result = save_annotations(&pdf_data, &[(0, vec![highlight])]);
     assert!(result.is_ok(), "save should succeed: {:?}", result.err());
 
     let new_pdf_data = result.unwrap();
-    assert!(new_pdf_data.len() > pdf_data.len(), "new PDF should be larger");
+    assert!(
+        new_pdf_data.len() > pdf_data.len(),
+        "new PDF should be larger"
+    );
 
     // Verify the new PDF can be parsed
     let new_pdf = hayro_syntax::Pdf::new(new_pdf_data.clone());
-    assert!(new_pdf.is_ok(), "new PDF should be valid: {:?}", new_pdf.err());
+    assert!(
+        new_pdf.is_ok(),
+        "new PDF should be valid: {:?}",
+        new_pdf.err()
+    );
 
     let new_pdf = new_pdf.unwrap();
     assert_eq!(new_pdf.pages().len(), 1, "should still have 1 page");
@@ -60,9 +65,8 @@ fn roundtrip_highlight_annotation() {
     // Verify the page has annotations
     let page = &new_pdf.pages()[0];
     let raw = page.raw();
-    let has_annots = raw.get::<hayro_syntax::object::Array<'_>>(
-        hayro_syntax::object::dict::keys::ANNOTS as &[u8],
-    );
+    let has_annots = raw
+        .get::<hayro_syntax::object::Array<'_>>(hayro_syntax::object::dict::keys::ANNOTS as &[u8]);
     assert!(has_annots.is_some(), "page should have /Annots array");
 
     if let Some(annots) = has_annots {
@@ -131,9 +135,7 @@ fn roundtrip_multiple_annotations() {
             color: Some(AnnotColor::yellow()),
             ..Default::default()
         },
-        quad_points: vec![
-            100.0, 720.0, 300.0, 720.0, 100.0, 700.0, 300.0, 700.0,
-        ],
+        quad_points: vec![100.0, 720.0, 300.0, 720.0, 100.0, 700.0, 300.0, 700.0],
     });
 
     let ink = Annotation::Ink(InkAnnot {
@@ -168,9 +170,8 @@ fn roundtrip_multiple_annotations() {
     let new_pdf = new_pdf.unwrap();
     let page = &new_pdf.pages()[0];
     let raw = page.raw();
-    let annots = raw.get::<hayro_syntax::object::Array<'_>>(
-        hayro_syntax::object::dict::keys::ANNOTS as &[u8],
-    );
+    let annots = raw
+        .get::<hayro_syntax::object::Array<'_>>(hayro_syntax::object::dict::keys::ANNOTS as &[u8]);
     assert!(annots.is_some(), "page should have /Annots array");
     if let Some(annots) = annots {
         let count = annots.raw_iter().count();
