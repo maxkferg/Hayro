@@ -580,6 +580,7 @@ dependencies = [
  "bytemuck",
  "console_error_panic_hook",
  "hayro",
+ "hayro-annot",
  "js-sys",
  "log",
  "vello_cpu",
