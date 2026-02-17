@@ -357,7 +357,7 @@ fn inject_annots_into_page(pdf_bytes: &mut Vec<u8>, page_ref: Ref, annots_ref: R
     true
 }
 
-/// Inject an /AcroForm reference into the catalog dictionary.
+/// Inject an `/AcroForm` reference into the catalog dictionary.
 fn inject_acro_form_into_catalog(
     pdf_bytes: &mut Vec<u8>,
     catalog_ref: Ref,
