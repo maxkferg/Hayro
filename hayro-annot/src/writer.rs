@@ -216,25 +216,8 @@ pub fn save_annotations(
     // Extend with annotation objects
     out_pdf.extend(&annot_chunk);
 
-    // Now we need to add /Annots to the page dictionaries.
-    // Since pdf-writer doesn't let us modify already-written objects,
-    // we need a different approach. We'll write the annotations as
-    // separate objects and then manually patch the page refs.
-    //
-    // Actually, the extracted pages are already written by hayro-write.
-    // We need to modify them to include /Annots. The simplest approach
-    // is to write a new version of the page dict that includes /Annots.
-    //
-    // But since we can't easily rewrite extracted pages through pdf-writer,
-    // let's use a simpler approach: create replacement page objects.
-
-    // For pages with annotations, we need to create replacement page dicts.
-    // We'll do this by building the raw bytes and inserting them.
-
-    // For now, let's use a simpler but effective approach:
-    // We'll create a minimal PDF that has annotations embedded.
-    // The annotations are written as separate objects, and we manually
-    // inject the /Annots key into the page dictionary bytes.
+    // Add /Annots to extracted page dictionaries in a post-processing pass.
+    // We then append a fresh xref/trailer section with corrected offsets.
 
     let mut pdf_bytes = out_pdf.finish();
 

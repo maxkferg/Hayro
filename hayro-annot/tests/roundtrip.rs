@@ -82,6 +82,13 @@ fn assert_startxref_points_to_xref(pdf_data: &[u8]) {
     );
 }
 
+fn load_fixture_pdf(path_from_repo_root: &str) -> Vec<u8> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(path_from_repo_root);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", path.display()))
+}
+
 #[test]
 fn roundtrip_highlight_annotation() {
     let pdf_data = create_blank_pdf();
@@ -293,6 +300,41 @@ fn roundtrip_annotation_with_nested_page_dictionary() {
         .raw()
         .get::<hayro_syntax::object::Array<'_>>(hayro_syntax::object::dict::keys::ANNOTS as &[u8]);
     assert!(annots.is_some(), "page should have /Annots array");
+}
+
+#[test]
+fn roundtrip_from_invalid_xref_fixture() {
+    let pdf_data = load_fixture_pdf("hayro-tests/pdfs/custom/xref_invalid_offsets.pdf");
+
+    // Ensure fixture itself is recoverably parsable.
+    let parsed = hayro_syntax::Pdf::new(pdf_data.clone()).expect("fixture should be parsable");
+    assert!(!parsed.pages().is_empty(), "fixture should contain at least one page");
+
+    let highlight = Annotation::Highlight(HighlightAnnot {
+        base: AnnotationBase {
+            rect: [50.0, 50.0, 150.0, 80.0],
+            color: Some(AnnotColor::yellow()),
+            ..Default::default()
+        },
+        quad_points: vec![50.0, 80.0, 150.0, 80.0, 50.0, 50.0, 150.0, 50.0],
+    });
+
+    let result = save_annotations(&pdf_data, &[(0, vec![highlight])]);
+    assert!(
+        result.is_ok(),
+        "save should succeed on malformed-xref fixture: {:?}",
+        result.err()
+    );
+
+    let new_pdf_data = result.unwrap();
+    assert_startxref_points_to_xref(&new_pdf_data);
+
+    let new_pdf = hayro_syntax::Pdf::new(new_pdf_data).expect("annotated fixture should parse");
+    let page = &new_pdf.pages()[0];
+    let annots = page
+        .raw()
+        .get::<hayro_syntax::object::Array<'_>>(hayro_syntax::object::dict::keys::ANNOTS as &[u8]);
+    assert!(annots.is_some(), "annotated fixture should have /Annots on page 0");
 }
 
 #[test]
