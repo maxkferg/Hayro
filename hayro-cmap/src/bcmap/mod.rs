@@ -131,8 +131,8 @@ pub(crate) fn parse<'a>(
         }
     }
 
-    cid_ranges.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-    notdef_ranges.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+    cid_ranges.sort_by_key(|a| a.range.start);
+    notdef_ranges.sort_by_key(|a| a.range.start);
 
     Some(CMap {
         metadata: Metadata {
