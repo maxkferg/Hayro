@@ -118,7 +118,7 @@ impl Annotation {
 pub struct HighlightAnnot {
     /// Base annotation fields.
     pub base: AnnotationBase,
-    /// QuadPoints — groups of 8 floats defining the highlighted regions.
+    /// `QuadPoints` — groups of 8 floats defining the highlighted regions.
     /// Each group of 8 defines 4 points (x1,y1, x2,y2, x3,y3, x4,y4).
     pub quad_points: Vec<f32>,
 }
@@ -128,7 +128,7 @@ pub struct HighlightAnnot {
 pub struct UnderlineAnnot {
     /// Base annotation fields.
     pub base: AnnotationBase,
-    /// QuadPoints — groups of 8 floats.
+    /// `QuadPoints` — groups of 8 floats.
     pub quad_points: Vec<f32>,
 }
 
@@ -137,7 +137,7 @@ pub struct UnderlineAnnot {
 pub struct StrikeOutAnnot {
     /// Base annotation fields.
     pub base: AnnotationBase,
-    /// QuadPoints — groups of 8 floats.
+    /// `QuadPoints` — groups of 8 floats.
     pub quad_points: Vec<f32>,
 }
 
@@ -146,7 +146,7 @@ pub struct StrikeOutAnnot {
 pub struct SquigglyAnnot {
     /// Base annotation fields.
     pub base: AnnotationBase,
-    /// QuadPoints — groups of 8 floats.
+    /// `QuadPoints` — groups of 8 floats.
     pub quad_points: Vec<f32>,
 }
 

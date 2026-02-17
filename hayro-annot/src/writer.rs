@@ -101,7 +101,7 @@ pub fn save_annotations(
 
     // Extract all pages using hayro-write
     let queries: Vec<hayro_write::ExtractionQuery> = (0..num_pages)
-        .map(|i| hayro_write::ExtractionQuery::new_page(i))
+        .map(hayro_write::ExtractionQuery::new_page)
         .collect();
 
     let extracted = hayro_write::extract(
@@ -127,13 +127,6 @@ pub fn save_annotations(
         .iter()
         .map(|r| r.as_ref().map_err(|_| SaveError::InvalidPdf).copied())
         .collect::<Result<Vec<_>, _>>()?;
-
-    // Build a map of page_index → annotations
-    let mut annot_map: std::collections::HashMap<usize, &Vec<Annotation>> =
-        std::collections::HashMap::new();
-    for (page_idx, annots) in page_annotations {
-        annot_map.insert(*page_idx, annots);
-    }
 
     // For each page that has annotations, write the annotation objects
     // and create /Annots arrays
