@@ -315,7 +315,10 @@ fn append_updated_xref_and_trailer(pdf_bytes: &mut Vec<u8>, catalog_ref: Ref) {
     }
 
     let xref_len = 1 + obj_offsets.keys().next_back().copied().unwrap_or(0);
-    let offsets = obj_offsets.iter().map(|(id, offset)| (*id, *offset)).collect::<Vec<_>>();
+    let offsets = obj_offsets
+        .iter()
+        .map(|(id, offset)| (*id, *offset))
+        .collect::<Vec<_>>();
     let prev_startxref = find_last_startxref(pdf_bytes);
 
     let xref_offset = pdf_bytes.len() + 1;
@@ -342,7 +345,9 @@ fn append_updated_xref_and_trailer(pdf_bytes: &mut Vec<u8>, catalog_ref: Ref) {
             }
 
             let generation = if free_id == 0 { "65535" } else { "00000" };
-            pdf_bytes.extend_from_slice(format!("{:010} {} f\r\n", next % xref_len, generation).as_bytes());
+            pdf_bytes.extend_from_slice(
+                format!("{:010} {} f\r\n", next % xref_len, generation).as_bytes(),
+            );
             written += 1;
         }
 
@@ -411,7 +416,10 @@ fn parse_obj_header(line: &[u8]) -> Option<i32> {
     while i < line.len() && line[i].is_ascii_digit() {
         i += 1;
     }
-    let id = std::str::from_utf8(&line[id_start..i]).ok()?.parse::<i32>().ok()?;
+    let id = std::str::from_utf8(&line[id_start..i])
+        .ok()?
+        .parse::<i32>()
+        .ok()?;
 
     if i + 6 > line.len() || &line[i..i + 6] != b" 0 obj" {
         return None;
@@ -447,7 +455,10 @@ fn find_last_startxref(pdf_bytes: &[u8]) -> Option<usize> {
         return None;
     }
 
-    std::str::from_utf8(&pdf_bytes[start..idx]).ok()?.parse().ok()
+    std::str::from_utf8(&pdf_bytes[start..idx])
+        .ok()?
+        .parse()
+        .ok()
 }
 
 /// Find the position of a byte pattern in a byte slice.

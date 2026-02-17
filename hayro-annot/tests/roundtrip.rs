@@ -74,7 +74,10 @@ fn assert_startxref_points_to_xref(pdf_data: &[u8]) {
         .parse::<usize>()
         .expect("startxref value should parse");
 
-    assert!(offset + 4 <= pdf_data.len(), "startxref points out of bounds");
+    assert!(
+        offset + 4 <= pdf_data.len(),
+        "startxref points out of bounds"
+    );
     assert_eq!(
         &pdf_data[offset..offset + 4],
         b"xref",
@@ -86,7 +89,8 @@ fn load_fixture_pdf(path_from_repo_root: &str) -> Vec<u8> {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join(path_from_repo_root);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", path.display()))
+    std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", path.display()))
 }
 
 #[test]
@@ -308,7 +312,10 @@ fn roundtrip_from_invalid_xref_fixture() {
 
     // Ensure fixture itself is recoverably parsable.
     let parsed = hayro_syntax::Pdf::new(pdf_data.clone()).expect("fixture should be parsable");
-    assert!(!parsed.pages().is_empty(), "fixture should contain at least one page");
+    assert!(
+        !parsed.pages().is_empty(),
+        "fixture should contain at least one page"
+    );
 
     let highlight = Annotation::Highlight(HighlightAnnot {
         base: AnnotationBase {
@@ -334,7 +341,10 @@ fn roundtrip_from_invalid_xref_fixture() {
     let annots = page
         .raw()
         .get::<hayro_syntax::object::Array<'_>>(hayro_syntax::object::dict::keys::ANNOTS as &[u8]);
-    assert!(annots.is_some(), "annotated fixture should have /Annots on page 0");
+    assert!(
+        annots.is_some(),
+        "annotated fixture should have /Annots on page 0"
+    );
 }
 
 #[test]
