@@ -1,557 +1,905 @@
 import init, { PdfViewer } from './hayro_demo.js';
 
-let pdfViewer = null;
-let currentImage = null;
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 5.0;
+const ZOOM_STEP = 0.1;
 
-// Annotation tool state
-let currentTool = 'select';
-let currentColor = [1, 0, 0]; // red default
-let isDrawing = false;
-let drawStartX = 0;
-let drawStartY = 0;
-let inkPoints = [];
-let renderScale = 1.0;
-let pageInfo = null;
+const state = {
+    pdfViewer: null,
+    pageInfos: [],
+    pageNodes: new Map(),
+    visiblePages: new Set(),
+    renderCache: new Map(),
+    renderEpoch: 0,
+    renderScheduled: false,
+    zoom: 1,
+    activePage: 1,
+    tool: 'select',
+    color: [1, 0.2, 0.2],
+    drawSession: null,
+    observer: null,
+};
+
+let ui = null;
 
 async function run() {
     await init();
+    bindUi();
+    bindFileLoading();
+    bindToolbar();
+    bindTools();
+    bindHistory();
+    setupLogWindow();
+    setTool('select');
+}
 
-    const dropZone = document.getElementById('drop-zone');
-    const fileInput = document.getElementById('file-input');
-    const fileSelector = document.getElementById('file-selector');
-    const viewer = document.getElementById('viewer');
-    const canvas = document.getElementById('pdf-canvas');
-    const annotCanvas = document.getElementById('annotation-canvas');
-    const prevButton = document.getElementById('prev-page');
-    const nextButton = document.getElementById('next-page');
-    const pageInfoEl = document.getElementById('page-info');
-    const pageInput = document.getElementById('page-input');
-    const dropOverlay = document.getElementById('drop-overlay');
+function bindUi() {
+    ui = {
+        openPdfButton: document.getElementById('open-pdf-btn'),
+        saveButton: document.getElementById('btn-save'),
+        fileInput: document.getElementById('file-input'),
+        emptyState: document.getElementById('empty-state'),
+        dropZone: document.getElementById('drop-zone'),
+        viewer: document.getElementById('viewer'),
+        viewerScroll: document.getElementById('viewer-scroll'),
+        dropOverlay: document.getElementById('drop-overlay'),
+        pageInfo: document.getElementById('page-info'),
+        pageInput: document.getElementById('page-input'),
+        prevPage: document.getElementById('prev-page'),
+        nextPage: document.getElementById('next-page'),
+        zoomIn: document.getElementById('zoom-in'),
+        zoomOut: document.getElementById('zoom-out'),
+        zoomInput: document.getElementById('zoom-input'),
+        zoomFitWidth: document.getElementById('zoom-fit-width'),
+        zoomFitPage: document.getElementById('zoom-fit-page'),
+        undoButton: document.getElementById('btn-undo'),
+        redoButton: document.getElementById('btn-redo'),
+        annotCount: document.getElementById('annot-count'),
+        clearLogs: document.getElementById('clear-logs'),
+        toolButtons: {
+            select: document.getElementById('tool-select'),
+            highlight: document.getElementById('tool-highlight'),
+            rectangle: document.getElementById('tool-rectangle'),
+            ink: document.getElementById('tool-ink'),
+            text: document.getElementById('tool-text'),
+            textField: document.getElementById('tool-text-field'),
+            signatureField: document.getElementById('tool-signature-field'),
+        },
+        colorButtons: document.querySelectorAll('.color-btn'),
+    };
+}
 
-    // Tool buttons
-    const toolButtons = {
-        select: document.getElementById('tool-select'),
-        highlight: document.getElementById('tool-highlight'),
-        rectangle: document.getElementById('tool-rectangle'),
-        ink: document.getElementById('tool-ink'),
-        text: document.getElementById('tool-text'),
+function bindFileLoading() {
+    ui.openPdfButton.addEventListener('click', () => ui.fileInput.click());
+    ui.dropZone.addEventListener('click', () => ui.fileInput.click());
+    ui.fileInput.addEventListener('change', async (event) => {
+        if (event.target.files.length > 0) {
+            await handleFile(event.target.files[0]);
+        }
+    });
+
+    const preventDefaults = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
     };
 
-    // Action buttons
-    const btnUndo = document.getElementById('btn-undo');
-    const btnSave = document.getElementById('btn-save');
-    const annotCountEl = document.getElementById('annot-count');
-
-    // Color buttons
-    const colorButtons = document.querySelectorAll('.color-btn');
-
-    // Tool selection
-    function setTool(tool) {
-        currentTool = tool;
-        Object.entries(toolButtons).forEach(([key, btn]) => {
-            btn.classList.toggle('active', key === tool);
-        });
-        annotCanvas.classList.toggle('active', tool !== 'select');
-        annotCanvas.style.cursor = tool === 'select' ? 'default' : 
-            tool === 'ink' ? 'crosshair' :
-            tool === 'text' ? 'text' : 'crosshair';
-    }
-
-    Object.entries(toolButtons).forEach(([tool, btn]) => {
-        btn.addEventListener('click', () => setTool(tool));
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((name) => {
+        document.addEventListener(name, preventDefaults);
     });
 
-    // Color selection
-    colorButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            colorButtons.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            currentColor = btn.dataset.color.split(',').map(Number);
+    ['dragenter', 'dragover'].forEach((name) => {
+        document.addEventListener(name, (event) => {
+            preventDefaults(event);
+            if (state.pdfViewer) {
+                ui.dropOverlay.hidden = false;
+            }
         });
     });
 
-    // Keyboard shortcuts
-    document.addEventListener('keydown', (e) => {
-        if (e.target.tagName === 'INPUT') return;
-        
-        if (e.ctrlKey && e.key === 'z') {
-            e.preventDefault();
-            undoAnnotation();
-            return;
-        }
+    ['dragleave', 'drop'].forEach((name) => {
+        document.addEventListener(name, () => {
+            ui.dropOverlay.hidden = true;
+        });
+    });
 
-        switch (e.key.toLowerCase()) {
-            case 'v': setTool('select'); break;
-            case 'h': setTool('highlight'); break;
-            case 'r': setTool('rectangle'); break;
-            case 'p': setTool('ink'); break;
-            case 't': setTool('text'); break;
-            case 'arrowleft':
-            case 'arrowup':
-                e.preventDefault();
-                if (pdfViewer && pdfViewer.previous_page()) renderCurrentPage();
-                break;
-            case 'arrowright':
-            case 'arrowdown':
-                e.preventDefault();
-                if (pdfViewer && pdfViewer.next_page()) renderCurrentPage();
-                break;
+    document.addEventListener('drop', async (event) => {
+        preventDefaults(event);
+        const files = event.dataTransfer?.files;
+        if (files && files.length > 0) {
+            await handleFile(files[0]);
+        }
+    });
+}
+
+function bindToolbar() {
+    ui.prevPage.addEventListener('click', () => scrollToPage(state.activePage - 1));
+    ui.nextPage.addEventListener('click', () => scrollToPage(state.activePage + 1));
+    ui.pageInput.addEventListener('keypress', (event) => {
+        if (event.key === 'Enter') {
+            const page = parseInt(ui.pageInput.value, 10);
+            scrollToPage(page);
         }
     });
 
-    // Undo
-    btnUndo.addEventListener('click', undoAnnotation);
-    function undoAnnotation() {
-        if (pdfViewer && pdfViewer.undo_annotation()) {
-            renderCurrentPage();
-        }
-    }
-
-    // Save
-    btnSave.addEventListener('click', () => {
-        if (!pdfViewer) return;
-        try {
-            const bytes = pdfViewer.save();
-            const blob = new Blob([bytes], { type: 'application/pdf' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'annotated.pdf';
-            a.click();
-            URL.revokeObjectURL(url);
-            console.info('PDF saved successfully');
-        } catch (error) {
-            console.error('Save failed:', error);
-        }
+    ui.zoomIn.addEventListener('click', () => setZoom(state.zoom + ZOOM_STEP));
+    ui.zoomOut.addEventListener('click', () => setZoom(state.zoom - ZOOM_STEP));
+    ui.zoomFitWidth.addEventListener('click', () => fitZoom('width'));
+    ui.zoomFitPage.addEventListener('click', () => fitZoom('page'));
+    ui.zoomInput.addEventListener('change', () => {
+        const inputZoom = parseFloat(ui.zoomInput.value) / 100;
+        setZoom(inputZoom);
     });
 
-    // Annotation drawing on overlay canvas
-    annotCanvas.addEventListener('mousedown', onMouseDown);
-    annotCanvas.addEventListener('mousemove', onMouseMove);
-    annotCanvas.addEventListener('mouseup', onMouseUp);
-    annotCanvas.addEventListener('mouseleave', onMouseUp);
-
-    function getCanvasPos(e) {
-        const rect = annotCanvas.getBoundingClientRect();
-        return {
-            x: e.clientX - rect.left,
-            y: e.clientY - rect.top
-        };
-    }
-
-    function onMouseDown(e) {
-        if (currentTool === 'select') return;
-        
-        const pos = getCanvasPos(e);
-        isDrawing = true;
-        drawStartX = pos.x;
-        drawStartY = pos.y;
-        inkPoints = [[pos.x, pos.y]];
-
-        if (currentTool === 'text') {
-            isDrawing = false;
-            const text = prompt('Enter text:');
-            if (text && text.trim()) {
-                addTextAnnotation(pos.x, pos.y, text.trim());
-            }
-        }
-    }
-
-    function onMouseMove(e) {
-        if (!isDrawing) return;
-        
-        const pos = getCanvasPos(e);
-        const ctx = annotCanvas.getContext('2d');
-
-        if (currentTool === 'ink') {
-            inkPoints.push([pos.x, pos.y]);
-            drawInkPreview(ctx);
-        } else {
-            drawRectPreview(ctx, drawStartX, drawStartY, pos.x, pos.y);
-        }
-    }
-
-    function onMouseUp(e) {
-        if (!isDrawing) return;
-        isDrawing = false;
-        
-        const pos = getCanvasPos(e);
-        const ctx = annotCanvas.getContext('2d');
-        ctx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-
-        if (currentTool === 'ink' && inkPoints.length >= 2) {
-            addInkAnnotation(inkPoints);
-        } else if (currentTool === 'highlight') {
-            addHighlightAnnotation(drawStartX, drawStartY, pos.x, pos.y);
-        } else if (currentTool === 'rectangle') {
-            addRectangleAnnotation(drawStartX, drawStartY, pos.x, pos.y);
-        }
-
-        inkPoints = [];
-    }
-
-    function drawInkPreview(ctx) {
-        ctx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-        if (inkPoints.length < 2) return;
-        
-        ctx.strokeStyle = `rgb(${currentColor[0]*255}, ${currentColor[1]*255}, ${currentColor[2]*255})`;
-        ctx.lineWidth = 2;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(inkPoints[0][0], inkPoints[0][1]);
-        for (let i = 1; i < inkPoints.length; i++) {
-            ctx.lineTo(inkPoints[i][0], inkPoints[i][1]);
-        }
-        ctx.stroke();
-    }
-
-    function drawRectPreview(ctx, x1, y1, x2, y2) {
-        ctx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-        
-        const [r, g, b] = currentColor;
-        if (currentTool === 'highlight') {
-            ctx.fillStyle = `rgba(${r*255}, ${g*255}, ${b*255}, 0.3)`;
-            ctx.fillRect(
-                Math.min(x1, x2), Math.min(y1, y2),
-                Math.abs(x2 - x1), Math.abs(y2 - y1)
-            );
-        } else {
-            ctx.strokeStyle = `rgb(${r*255}, ${g*255}, ${b*255})`;
-            ctx.lineWidth = 2;
-            ctx.strokeRect(
-                Math.min(x1, x2), Math.min(y1, y2),
-                Math.abs(x2 - x1), Math.abs(y2 - y1)
-            );
-        }
-    }
-
-    // Convert screen coordinates to PDF coordinates
-    function screenToPdf(screenX, screenY) {
-        if (!pageInfo) return [0, 0];
-        
-        const dpr = window.devicePixelRatio || 1;
-        // The annotation canvas is at CSS pixel scale
-        // Convert to PDF points by dividing by render scale
-        const ptsX = screenX / renderScale;
-        const ptsY = screenY / renderScale;
-        
-        // Screen is y-down, PDF is y-up
-        // cropBox: [x0, y0, x1, y1]
-        const cropX0 = pageInfo[2];
-        const cropY0 = pageInfo[3];
-        const cropX1 = pageInfo[4];
-        const cropY1 = pageInfo[5];
-        const rotation = pageInfo[6];
-
-        if (rotation === 0) {
-            return [cropX0 + ptsX, cropY1 - ptsY];
-        } else if (rotation === 90) {
-            return [cropX0 + ptsY, cropY0 + ptsX];
-        } else if (rotation === 180) {
-            return [cropX1 - ptsX, cropY0 + ptsY];
-        } else {
-            return [cropX1 - ptsY, cropY1 - ptsX];
-        }
-    }
-
-    function addHighlightAnnotation(sx1, sy1, sx2, sy2) {
-        if (!pdfViewer) return;
-        
-        const [px1, py1] = screenToPdf(sx1, sy1);
-        const [px2, py2] = screenToPdf(sx2, sy2);
-        
-        // QuadPoints: 4 corners of the highlighted region
-        // Order: top-left, top-right, bottom-left, bottom-right
-        const minX = Math.min(px1, px2);
-        const minY = Math.min(py1, py2);
-        const maxX = Math.max(px1, px2);
-        const maxY = Math.max(py1, py2);
-        
-        const quadPoints = new Float32Array([
-            minX, maxY, maxX, maxY,
-            minX, minY, maxX, minY
-        ]);
-        
-        pdfViewer.add_highlight(quadPoints, currentColor[0], currentColor[1], currentColor[2]);
-        renderCurrentPage();
-    }
-
-    function addRectangleAnnotation(sx1, sy1, sx2, sy2) {
-        if (!pdfViewer) return;
-        
-        const [px1, py1] = screenToPdf(sx1, sy1);
-        const [px2, py2] = screenToPdf(sx2, sy2);
-        
-        pdfViewer.add_rectangle(px1, py1, px2, py2, currentColor[0], currentColor[1], currentColor[2]);
-        renderCurrentPage();
-    }
-
-    function addInkAnnotation(points) {
-        if (!pdfViewer || points.length < 2) return;
-        
-        const pdfPoints = [];
-        for (const [sx, sy] of points) {
-            const [px, py] = screenToPdf(sx, sy);
-            pdfPoints.push(px, py);
-        }
-        
-        const flatPoints = new Float32Array(pdfPoints);
-        pdfViewer.add_ink(flatPoints, currentColor[0], currentColor[1], currentColor[2], 2.0);
-        renderCurrentPage();
-    }
-
-    function addTextAnnotation(sx, sy, text) {
-        if (!pdfViewer) return;
-        
-        const [px, py] = screenToPdf(sx, sy);
-        const fontSize = 12;
-        const width = Math.max(text.length * fontSize * 0.6, 100);
-        const height = fontSize * 2;
-        
-        pdfViewer.add_freetext(px, py - height, px + width, py, text, fontSize);
-        renderCurrentPage();
-    }
-
-    // File handling
-    dropZone.addEventListener('click', () => fileInput.click());
-
-    const preventDefaults = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-    };
-
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        document.addEventListener(eventName, preventDefaults, false);
+    ui.viewerScroll.addEventListener('scroll', () => {
+        updateActivePageFromScroll();
     });
 
-    function handlePDFDrop(e, files) {
-        preventDefaults(e);
-        dropZone.classList.remove('dragover');
-        dropOverlay.style.display = 'none';
-        if (files.length > 0) handleFile(files[0]);
-    }
+    ui.viewerScroll.addEventListener(
+        'wheel',
+        (event) => {
+            if (!state.pdfViewer) return;
+            if (!(event.ctrlKey || event.metaKey)) return;
+            event.preventDefault();
 
-    ['dragenter', 'dragover'].forEach(eventName => {
-        dropZone.addEventListener(eventName, (e) => {
-            preventDefaults(e);
-            dropZone.classList.add('dragover');
-        }, false);
-        viewer.addEventListener(eventName, (e) => {
-            preventDefaults(e);
-            if (pdfViewer) dropOverlay.style.display = 'flex';
-        }, false);
-    });
-
-    ['dragleave'].forEach(eventName => {
-        dropZone.addEventListener(eventName, (e) => {
-            preventDefaults(e);
-            dropZone.classList.remove('dragover');
-        }, false);
-        viewer.addEventListener(eventName, (e) => {
-            preventDefaults(e);
-            if (!viewer.contains(e.relatedTarget)) dropOverlay.style.display = 'none';
-        }, false);
-    });
-
-    dropZone.addEventListener('drop', (e) => handlePDFDrop(e, e.dataTransfer.files), false);
-    viewer.addEventListener('drop', (e) => handlePDFDrop(e, e.dataTransfer.files), false);
-
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) handleFile(e.target.files[0]);
-    });
-
-    prevButton.addEventListener('click', () => {
-        if (pdfViewer && pdfViewer.previous_page()) renderCurrentPage();
-    });
-
-    nextButton.addEventListener('click', () => {
-        if (pdfViewer && pdfViewer.next_page()) renderCurrentPage();
-    });
-
-    pageInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            const pageNum = parseInt(pageInput.value);
-            if (pdfViewer && pdfViewer.set_page(pageNum)) {
-                renderCurrentPage();
-            } else {
-                pageInput.value = pdfViewer ? pdfViewer.get_current_page() : 1;
-            }
-        }
-    });
-
-    async function handleFile(file) {
-        if (file.type !== 'application/pdf') {
-            console.error('Please select a PDF file.');
-            return;
-        }
-        try {
-            const arrayBuffer = await file.arrayBuffer();
-            const uint8Array = new Uint8Array(arrayBuffer);
-            await loadPDFData(uint8Array);
-        } catch (error) {
-            console.error('Error reading file:', error);
-        }
-    }
-
-    async function loadPDFData(uint8Array) {
-        try {
-            pdfViewer = new PdfViewer();
-            await pdfViewer.load_pdf(uint8Array);
-            
-            fileSelector.style.display = 'none';
-            viewer.style.display = 'flex';
-            
-            renderCurrentPage();
-        } catch (error) {
-            console.error('Error loading PDF:', error);
-            pdfViewer = null;
-        }
-    }
-
-    async function renderCurrentPage() {
-        if (!pdfViewer) return;
-
-        try {
-            const viewportWidth = window.innerWidth;
-            const viewportHeight = window.innerHeight - 200; // account for toolbar + controls + logs
-            const dpr = window.devicePixelRatio || 1;
-
-            const result = pdfViewer.render_current_page(viewportWidth, viewportHeight, dpr);
-            const width = result[0];
-            const height = result[1];
-            const rgbaData = result[2];
-
-            const imageData = new ImageData(new Uint8ClampedArray(rgbaData), width, height);
-            currentImage = { imageData, width, height };
-            
-            // Get page info for coordinate mapping
-            pageInfo = pdfViewer.get_page_info();
-            const pageWidthPts = pageInfo[0];
-            const pageHeightPts = pageInfo[1];
-            
-            // Calculate render scale (CSS pixels per PDF point)
-            const cssWidth = width / dpr;
-            const cssHeight = height / dpr;
-            renderScale = cssWidth / pageWidthPts;
-            
-            drawImage();
-            updatePageInfo();
-            updateAnnotationCount();
-        } catch (error) {
-            console.error('Error rendering page:', error);
-        }
-    }
-
-    function drawImage() {
-        if (!currentImage) return;
-
-        const ctx = canvas.getContext('2d');
-        const dpr = window.devicePixelRatio || 1;
-
-        canvas.width = currentImage.width;
-        canvas.height = currentImage.height;
-        canvas.style.width = (currentImage.width / dpr) + 'px';
-        canvas.style.height = (currentImage.height / dpr) + 'px';
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.putImageData(currentImage.imageData, 0, 0);
-
-        // Position annotation canvas on top of pdf-canvas
-        const cssW = currentImage.width / dpr;
-        const cssH = currentImage.height / dpr;
-        
-        annotCanvas.width = cssW;
-        annotCanvas.height = cssH;
-        annotCanvas.style.width = cssW + 'px';
-        annotCanvas.style.height = cssH + 'px';
-        
-        // Position it over the PDF canvas
-        const pdfRect = canvas.getBoundingClientRect();
-        const containerRect = canvas.parentElement.getBoundingClientRect();
-        annotCanvas.style.left = (pdfRect.left - containerRect.left) + 'px';
-        annotCanvas.style.top = (pdfRect.top - containerRect.top) + 'px';
-    }
-
-    function updatePageInfo() {
-        if (!pdfViewer) return;
-        
-        const currentPage = pdfViewer.get_current_page();
-        const totalPages = pdfViewer.get_total_pages();
-        
-        pageInfoEl.textContent = `${currentPage} / ${totalPages}`;
-        pageInput.value = currentPage;
-        pageInput.max = totalPages;
-        
-        prevButton.disabled = currentPage === 1;
-        nextButton.disabled = currentPage === totalPages;
-    }
-
-    function updateAnnotationCount() {
-        if (!pdfViewer) return;
-        const count = pdfViewer.get_annotation_count();
-        annotCountEl.textContent = count > 0 ? `${count} annotation${count > 1 ? 's' : ''}` : '';
-        btnUndo.disabled = count === 0;
-    }
+            const rect = ui.viewerScroll.getBoundingClientRect();
+            const cursorX = event.clientX - rect.left + ui.viewerScroll.scrollLeft;
+            const cursorY = event.clientY - rect.top + ui.viewerScroll.scrollTop;
+            const oldZoom = state.zoom;
+            const factor = event.deltaY < 0 ? 1.1 : 0.9;
+            setZoom(state.zoom * factor);
+            const scaleRatio = state.zoom / oldZoom;
+            ui.viewerScroll.scrollLeft = cursorX * scaleRatio - (event.clientX - rect.left);
+            ui.viewerScroll.scrollTop = cursorY * scaleRatio - (event.clientY - rect.top);
+        },
+        { passive: false }
+    );
 
     window.addEventListener('resize', () => {
-        if (currentImage) {
-            drawImage();
+        if (!state.pdfViewer) return;
+        requestRenderVisible();
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (!state.pdfViewer) return;
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+        if ((event.ctrlKey || event.metaKey) && event.key === '=') {
+            event.preventDefault();
+            setZoom(state.zoom + ZOOM_STEP);
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key === '-') {
+            event.preventDefault();
+            setZoom(state.zoom - ZOOM_STEP);
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key === '0') {
+            event.preventDefault();
+            fitZoom('width');
+            return;
+        }
+
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+            event.preventDefault();
+            if (event.shiftKey) {
+                redo();
+            } else {
+                undo();
+            }
+            return;
+        }
+
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+            event.preventDefault();
+            redo();
+            return;
+        }
+
+        switch (event.key.toLowerCase()) {
+            case 'v':
+                setTool('select');
+                break;
+            case 'h':
+                setTool('highlight');
+                break;
+            case 'r':
+                setTool('rectangle');
+                break;
+            case 'p':
+                setTool('ink');
+                break;
+            case 't':
+                setTool('text');
+                break;
+            case 'f':
+                setTool('textField');
+                break;
+            case 's':
+                setTool('signatureField');
+                break;
+            default:
+                break;
+        }
+    });
+}
+
+function bindTools() {
+    Object.entries(ui.toolButtons).forEach(([tool, button]) => {
+        button.addEventListener('click', () => setTool(tool));
+    });
+
+    ui.colorButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+            ui.colorButtons.forEach((candidate) => candidate.classList.remove('active'));
+            button.classList.add('active');
+            state.color = button.dataset.color.split(',').map(Number);
+        });
+    });
+
+    ui.saveButton.addEventListener('click', saveDocument);
+}
+
+function bindHistory() {
+    ui.undoButton.addEventListener('click', undo);
+    ui.redoButton.addEventListener('click', redo);
+}
+
+async function handleFile(file) {
+    if (file.type !== 'application/pdf') {
+        console.error('Please choose a PDF file.');
+        return;
+    }
+
+    try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        await loadPdfData(bytes);
+        console.info(`Loaded ${file.name}`);
+    } catch (error) {
+        console.error('Failed to load PDF:', error);
+    }
+}
+
+async function loadPdfData(bytes) {
+    state.pdfViewer = new PdfViewer();
+    state.pdfViewer.load_pdf(bytes);
+    state.pageInfos = [];
+    state.pageNodes.clear();
+    state.visiblePages.clear();
+    state.renderCache.clear();
+    state.renderEpoch += 1;
+    state.activePage = 1;
+
+    const totalPages = state.pdfViewer.get_total_pages();
+    for (let page = 1; page <= totalPages; page += 1) {
+        const info = Array.from(state.pdfViewer.get_page_info_for(page));
+        state.pageInfos.push(info);
+    }
+
+    ui.emptyState.hidden = true;
+    ui.viewer.hidden = false;
+    initializePageShells();
+    layoutPages();
+    fitZoom('width');
+    updateToolbarState();
+    updateHistoryState();
+}
+
+function initializePageShells() {
+    if (state.observer) {
+        state.observer.disconnect();
+    }
+
+    ui.viewerScroll.innerHTML = '';
+    state.pageNodes.clear();
+    state.visiblePages.clear();
+
+    const observer = new IntersectionObserver(
+        (entries) => {
+            for (const entry of entries) {
+                const page = parseInt(entry.target.dataset.page, 10);
+                if (entry.isIntersecting) {
+                    state.visiblePages.add(page);
+                } else {
+                    state.visiblePages.delete(page);
+                }
+            }
+            requestRenderVisible();
+        },
+        {
+            root: ui.viewerScroll,
+            rootMargin: '500px',
+            threshold: 0.01,
+        }
+    );
+    state.observer = observer;
+
+    for (let page = 1; page <= state.pageInfos.length; page += 1) {
+        const shell = document.createElement('div');
+        shell.className = 'page-shell';
+        shell.dataset.page = String(page);
+
+        const label = document.createElement('div');
+        label.className = 'page-label';
+        label.textContent = `Page ${page}`;
+
+        const paper = document.createElement('div');
+        paper.className = 'page-paper';
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'pdf-canvas';
+
+        const textLayer = document.createElement('div');
+        textLayer.className = 'text-layer';
+
+        const annotationLayer = document.createElement('canvas');
+        annotationLayer.className = 'annotation-layer';
+        bindAnnotationLayer(annotationLayer, page);
+
+        paper.appendChild(canvas);
+        paper.appendChild(textLayer);
+        paper.appendChild(annotationLayer);
+        shell.appendChild(label);
+        shell.appendChild(paper);
+        ui.viewerScroll.appendChild(shell);
+
+        observer.observe(shell);
+        if (page <= 3) {
+            state.visiblePages.add(page);
+        }
+        state.pageNodes.set(page, {
+            shell,
+            paper,
+            canvas,
+            textLayer,
+            annotationLayer,
+            renderedZoom: null,
+            textZoom: null,
+        });
+    }
+}
+
+function bindAnnotationLayer(layer, page) {
+    layer.addEventListener('pointerdown', (event) => {
+        if (!state.pdfViewer || state.tool === 'select') return;
+
+        const [x, y] = localPointer(layer, event);
+        state.drawSession = {
+            page,
+            startX: x,
+            startY: y,
+            points: [[x, y]],
+        };
+
+        if (state.tool === 'text') {
+            state.drawSession = null;
+            const text = window.prompt('Text annotation content');
+            if (text && text.trim()) {
+                addTextAnnotation(page, x, y, text.trim());
+            }
+        }
+
+        layer.setPointerCapture(event.pointerId);
+    });
+
+    layer.addEventListener('pointermove', (event) => {
+        if (!state.drawSession || state.drawSession.page !== page) return;
+        const [x, y] = localPointer(layer, event);
+        const ctx = layer.getContext('2d');
+        if (!ctx) return;
+
+        if (state.tool === 'ink') {
+            state.drawSession.points.push([x, y]);
+            drawInkPreview(ctx, state.drawSession.points);
+        } else {
+            drawRectPreview(ctx, state.drawSession.startX, state.drawSession.startY, x, y);
         }
     });
 
-    setupLogWindow();
+    layer.addEventListener('pointerup', () => finishDraw(layer, page));
+    layer.addEventListener('pointercancel', () => finishDraw(layer, page));
+    layer.addEventListener('pointerleave', () => finishDraw(layer, page));
+}
+
+function finishDraw(layer, page) {
+    if (!state.drawSession || state.drawSession.page !== page) return;
+    const session = state.drawSession;
+    state.drawSession = null;
+
+    const ctx = layer.getContext('2d');
+    if (ctx) {
+        ctx.clearRect(0, 0, layer.width, layer.height);
+    }
+
+    if (state.tool === 'ink' && session.points.length >= 2) {
+        addInkAnnotation(page, session.points);
+        return;
+    }
+
+    if (session.points.length === 0) return;
+    const [endX, endY] = session.points[session.points.length - 1];
+    if (state.tool === 'highlight') {
+        addHighlightAnnotation(page, session.startX, session.startY, endX, endY);
+    } else if (state.tool === 'rectangle') {
+        addRectangleAnnotation(page, session.startX, session.startY, endX, endY);
+    } else if (state.tool === 'textField') {
+        addTextField(page, session.startX, session.startY, endX, endY);
+    } else if (state.tool === 'signatureField') {
+        addSignatureField(page, session.startX, session.startY, endX, endY);
+    }
+}
+
+function drawInkPreview(ctx, points) {
+    if (points.length < 2) return;
+    clearCanvas(ctx);
+    const [r, g, b] = state.color;
+    ctx.strokeStyle = `rgb(${r * 255}, ${g * 255}, ${b * 255})`;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i += 1) {
+        ctx.lineTo(points[i][0], points[i][1]);
+    }
+    ctx.stroke();
+}
+
+function drawRectPreview(ctx, x0, y0, x1, y1) {
+    clearCanvas(ctx);
+    const [r, g, b] = state.color;
+    if (state.tool === 'highlight') {
+        ctx.fillStyle = `rgba(${r * 255}, ${g * 255}, ${b * 255}, 0.3)`;
+        ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    } else {
+        ctx.strokeStyle = `rgb(${r * 255}, ${g * 255}, ${b * 255})`;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    }
+}
+
+function clearCanvas(ctx) {
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+}
+
+function localPointer(layer, event) {
+    const rect = layer.getBoundingClientRect();
+    return [event.clientX - rect.left, event.clientY - rect.top];
+}
+
+function setTool(tool) {
+    state.tool = tool;
+    Object.entries(ui.toolButtons).forEach(([name, button]) => {
+        button.classList.toggle('active', name === tool);
+    });
+
+    for (const pageNode of state.pageNodes.values()) {
+        pageNode.annotationLayer.classList.toggle('active', tool !== 'select');
+        pageNode.textLayer.style.pointerEvents = tool === 'select' ? 'auto' : 'none';
+    }
+}
+
+function clampZoom(value) {
+    if (!Number.isFinite(value)) return state.zoom;
+    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+}
+
+function setZoom(zoom) {
+    if (!state.pdfViewer) return;
+    const clamped = clampZoom(zoom);
+    if (Math.abs(clamped - state.zoom) < 0.0001) return;
+    state.zoom = clamped;
+    state.renderCache.clear();
+    state.renderEpoch += 1;
+    layoutPages();
+    updateToolbarState();
+    requestRenderVisible();
+}
+
+function fitZoom(mode) {
+    if (!state.pdfViewer || state.pageInfos.length === 0) return;
+    const pageInfo = state.pageInfos[state.activePage - 1] ?? state.pageInfos[0];
+    const viewportWidth = Math.max(300, ui.viewerScroll.clientWidth - 40);
+    const viewportHeight = Math.max(300, ui.viewerScroll.clientHeight - 50);
+
+    const pageWidth = pageInfo[0];
+    const pageHeight = pageInfo[1];
+
+    if (mode === 'page') {
+        setZoom(Math.min(viewportWidth / pageWidth, viewportHeight / pageHeight));
+    } else {
+        setZoom(viewportWidth / pageWidth);
+    }
+}
+
+function layoutPages() {
+    const dpr = window.devicePixelRatio || 1;
+    for (let page = 1; page <= state.pageInfos.length; page += 1) {
+        const info = state.pageInfos[page - 1];
+        const width = Math.max(1, Math.floor(info[0] * state.zoom));
+        const height = Math.max(1, Math.floor(info[1] * state.zoom));
+        const node = state.pageNodes.get(page);
+        if (!node) continue;
+
+        node.shell.style.width = `${width}px`;
+        node.shell.style.height = `${height}px`;
+        node.paper.style.width = `${width}px`;
+        node.paper.style.height = `${height}px`;
+        node.canvas.style.width = `${width}px`;
+        node.canvas.style.height = `${height}px`;
+        node.canvas.width = Math.round(width * dpr);
+        node.canvas.height = Math.round(height * dpr);
+        node.annotationLayer.style.width = `${width}px`;
+        node.annotationLayer.style.height = `${height}px`;
+        node.annotationLayer.width = width;
+        node.annotationLayer.height = height;
+    }
+}
+
+function requestRenderVisible() {
+    if (!state.pdfViewer) return;
+    if (state.renderScheduled) return;
+    state.renderScheduled = true;
+    requestAnimationFrame(() => {
+        state.renderScheduled = false;
+        renderVisiblePages();
+    });
+}
+
+function renderVisiblePages() {
+    const visible = Array.from(state.visiblePages).sort((a, b) => a - b);
+    for (const page of visible) {
+        renderPage(page);
+    }
+}
+
+function renderPage(page) {
+    const node = state.pageNodes.get(page);
+    if (!node || !state.pdfViewer) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const cacheKey = `${page}@${state.zoom.toFixed(4)}@${dpr.toFixed(2)}`;
+    const cached = state.renderCache.get(cacheKey);
+
+    if (cached) {
+        drawCachedBitmap(node.canvas, cached, dpr);
+        if (node.textZoom !== state.zoom) {
+            renderTextLayer(page, node);
+        }
+        node.annotationLayer.classList.toggle('active', state.tool !== 'select');
+        return;
+    }
+
+    try {
+        const result = state.pdfViewer.render_page_scaled(page, state.zoom, dpr);
+        const width = result[0];
+        const height = result[1];
+        const rgbaData = result[2];
+        const imageData = new ImageData(new Uint8ClampedArray(rgbaData), width, height);
+        state.renderCache.set(cacheKey, imageData);
+        drawCachedBitmap(node.canvas, imageData, dpr);
+        renderTextLayer(page, node);
+        node.annotationLayer.classList.toggle('active', state.tool !== 'select');
+    } catch (error) {
+        console.error(`Failed to render page ${page}:`, error);
+    }
+}
+
+function drawCachedBitmap(canvas, imageData, dpr) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    canvas.width = imageData.width;
+    canvas.height = imageData.height;
+    canvas.style.width = `${imageData.width / dpr}px`;
+    canvas.style.height = `${imageData.height / dpr}px`;
+    ctx.putImageData(imageData, 0, 0);
+}
+
+function renderTextLayer(page, node) {
+    if (!state.pdfViewer) return;
+    const pageInfo = state.pageInfos[page - 1];
+    if (!pageInfo) return;
+
+    const spans = state.pdfViewer.get_text_spans(page);
+    node.textLayer.innerHTML = '';
+    for (const spanData of spans) {
+        const text = spanData[0];
+        if (!text || !String(text).trim()) continue;
+
+        const x0 = spanData[1];
+        const y0 = spanData[2];
+        const x1 = spanData[3];
+        const y1 = spanData[4];
+        const [screenRectX0, screenRectY0, screenRectX1, screenRectY1] = pdfRectToScreen(
+            pageInfo,
+            x0,
+            y0,
+            x1,
+            y1
+        );
+
+        const span = document.createElement('span');
+        span.className = 'text-span';
+        span.textContent = text;
+        span.style.left = `${screenRectX0}px`;
+        span.style.top = `${screenRectY0}px`;
+        span.style.width = `${Math.max(1, screenRectX1 - screenRectX0)}px`;
+        span.style.height = `${Math.max(1, screenRectY1 - screenRectY0)}px`;
+        span.style.fontSize = `${Math.max(8, screenRectY1 - screenRectY0)}px`;
+        node.textLayer.appendChild(span);
+    }
+
+    node.textZoom = state.zoom;
+}
+
+function pdfRectToScreen(pageInfo, x0, y0, x1, y1) {
+    const corners = [
+        pdfToScreen(pageInfo, x0, y0),
+        pdfToScreen(pageInfo, x1, y0),
+        pdfToScreen(pageInfo, x0, y1),
+        pdfToScreen(pageInfo, x1, y1),
+    ];
+    const xs = corners.map((entry) => entry[0]);
+    const ys = corners.map((entry) => entry[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+function pdfToScreen(pageInfo, pdfX, pdfY) {
+    const cropX0 = pageInfo[2];
+    const cropY0 = pageInfo[3];
+    const cropX1 = pageInfo[4];
+    const cropY1 = pageInfo[5];
+    const rotation = pageInfo[6];
+
+    if (rotation === 0) {
+        return [(pdfX - cropX0) * state.zoom, (cropY1 - pdfY) * state.zoom];
+    }
+    if (rotation === 90) {
+        return [(pdfY - cropY0) * state.zoom, (pdfX - cropX0) * state.zoom];
+    }
+    if (rotation === 180) {
+        return [(cropX1 - pdfX) * state.zoom, (pdfY - cropY0) * state.zoom];
+    }
+    return [(cropY1 - pdfY) * state.zoom, (cropX1 - pdfX) * state.zoom];
+}
+
+function screenToPdf(pageInfo, screenX, screenY) {
+    const cropX0 = pageInfo[2];
+    const cropY0 = pageInfo[3];
+    const cropX1 = pageInfo[4];
+    const cropY1 = pageInfo[5];
+    const rotation = pageInfo[6];
+    const ptsX = screenX / state.zoom;
+    const ptsY = screenY / state.zoom;
+
+    if (rotation === 0) {
+        return [cropX0 + ptsX, cropY1 - ptsY];
+    }
+    if (rotation === 90) {
+        return [cropX0 + ptsY, cropY0 + ptsX];
+    }
+    if (rotation === 180) {
+        return [cropX1 - ptsX, cropY0 + ptsY];
+    }
+    return [cropX1 - ptsY, cropY1 - ptsX];
+}
+
+function ensureCurrentPage(page) {
+    if (!state.pdfViewer) return false;
+    state.activePage = page;
+    return state.pdfViewer.set_page(page);
+}
+
+function addHighlightAnnotation(page, sx0, sy0, sx1, sy1) {
+    if (!state.pdfViewer || !ensureCurrentPage(page)) return;
+    const pageInfo = state.pageInfos[page - 1];
+    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    const minX = Math.min(x0, x1);
+    const maxX = Math.max(x0, x1);
+    const minY = Math.min(y0, y1);
+    const maxY = Math.max(y0, y1);
+    const quadPoints = new Float32Array([minX, maxY, maxX, maxY, minX, minY, maxX, minY]);
+    state.pdfViewer.add_highlight(quadPoints, state.color[0], state.color[1], state.color[2]);
+    refreshAfterMutation();
+}
+
+function addRectangleAnnotation(page, sx0, sy0, sx1, sy1) {
+    if (!state.pdfViewer || !ensureCurrentPage(page)) return;
+    const pageInfo = state.pageInfos[page - 1];
+    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    state.pdfViewer.add_rectangle(x0, y0, x1, y1, state.color[0], state.color[1], state.color[2]);
+    refreshAfterMutation();
+}
+
+function addInkAnnotation(page, points) {
+    if (!state.pdfViewer || !ensureCurrentPage(page) || points.length < 2) return;
+    const pageInfo = state.pageInfos[page - 1];
+    const mapped = [];
+    for (const [x, y] of points) {
+        const [px, py] = screenToPdf(pageInfo, x, y);
+        mapped.push(px, py);
+    }
+    state.pdfViewer.add_ink(new Float32Array(mapped), state.color[0], state.color[1], state.color[2], 2.0);
+    refreshAfterMutation();
+}
+
+function addTextAnnotation(page, screenX, screenY, text) {
+    if (!state.pdfViewer || !ensureCurrentPage(page)) return;
+    const pageInfo = state.pageInfos[page - 1];
+    const [x, y] = screenToPdf(pageInfo, screenX, screenY);
+    const fontSize = 12;
+    const width = Math.max(100, text.length * fontSize * 0.58);
+    const height = fontSize * 2;
+    state.pdfViewer.add_freetext(x, y - height, x + width, y, text, fontSize);
+    refreshAfterMutation();
+}
+
+function addTextField(page, sx0, sy0, sx1, sy1) {
+    if (!state.pdfViewer || !ensureCurrentPage(page)) return;
+    const name = window.prompt('Text field name');
+    if (!name || !name.trim()) return;
+    const value = window.prompt('Initial value (optional)') ?? '';
+    const pageInfo = state.pageInfos[page - 1];
+    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    state.pdfViewer.add_text_field(x0, y0, x1, y1, name.trim(), value);
+    refreshAfterMutation();
+}
+
+function addSignatureField(page, sx0, sy0, sx1, sy1) {
+    if (!state.pdfViewer || !ensureCurrentPage(page)) return;
+    const name = window.prompt('Signature field name');
+    if (!name || !name.trim()) return;
+    const pageInfo = state.pageInfos[page - 1];
+    const [x0, y0] = screenToPdf(pageInfo, sx0, sy0);
+    const [x1, y1] = screenToPdf(pageInfo, sx1, sy1);
+    state.pdfViewer.add_signature_field(x0, y0, x1, y1, name.trim());
+    refreshAfterMutation();
+}
+
+function refreshAfterMutation() {
+    state.renderCache.clear();
+    state.renderEpoch += 1;
+    requestRenderVisible();
+    updateHistoryState();
+}
+
+function undo() {
+    if (!state.pdfViewer) return;
+    if (state.pdfViewer.undo_annotation()) {
+        refreshAfterMutation();
+    }
+}
+
+function redo() {
+    if (!state.pdfViewer) return;
+    if (state.pdfViewer.redo_annotation()) {
+        refreshAfterMutation();
+    }
+}
+
+function scrollToPage(page) {
+    if (!state.pdfViewer) return;
+    const normalized = Math.max(1, Math.min(state.pageInfos.length, page));
+    const node = state.pageNodes.get(normalized);
+    if (!node) return;
+    node.shell.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    state.activePage = normalized;
+    state.pdfViewer.set_page(normalized);
+    updateToolbarState();
+}
+
+function updateActivePageFromScroll() {
+    if (!state.pdfViewer) return;
+    let bestPage = state.activePage;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    const containerRect = ui.viewerScroll.getBoundingClientRect();
+    const anchorY = containerRect.top + 80;
+
+    for (const [page, node] of state.pageNodes.entries()) {
+        const rect = node.shell.getBoundingClientRect();
+        const distance = Math.abs(rect.top - anchorY);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestPage = page;
+        }
+    }
+
+    if (bestPage !== state.activePage) {
+        state.activePage = bestPage;
+        state.pdfViewer.set_page(bestPage);
+        updateToolbarState();
+    }
+}
+
+function updateToolbarState() {
+    if (!state.pdfViewer) return;
+    const total = state.pageInfos.length;
+    ui.pageInfo.textContent = `${state.activePage} / ${total}`;
+    ui.pageInput.value = state.activePage;
+    ui.pageInput.max = total;
+    ui.prevPage.disabled = state.activePage <= 1;
+    ui.nextPage.disabled = state.activePage >= total;
+    ui.zoomInput.value = Math.round(state.zoom * 100);
+}
+
+function updateHistoryState() {
+    if (!state.pdfViewer) {
+        ui.undoButton.disabled = true;
+        ui.redoButton.disabled = true;
+        ui.annotCount.textContent = 'No pending edits';
+        return;
+    }
+
+    const currentPageCount = state.pdfViewer.get_annotation_count();
+    const totalCount = state.pdfViewer.get_operation_count();
+    const redoCount = state.pdfViewer.get_redo_count();
+    ui.undoButton.disabled = totalCount === 0;
+    ui.redoButton.disabled = redoCount === 0;
+    ui.annotCount.textContent = `Page edits: ${currentPageCount} · Total edits: ${totalCount}`;
+}
+
+function saveDocument() {
+    if (!state.pdfViewer) return;
+    try {
+        const bytes = state.pdfViewer.save();
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'hayro-edited.pdf';
+        link.click();
+        URL.revokeObjectURL(url);
+        console.info('Saved edited PDF');
+    } catch (error) {
+        console.error('Save failed:', error);
+    }
 }
 
 function setupLogWindow() {
     const logContent = document.getElementById('log-content');
-    const clearLogsButton = document.getElementById('clear-logs');
-
     logContent.innerHTML = '';
-
-    window.addLogEntry = function(level, message) {
-        const logEntry = document.createElement('div');
-        logEntry.className = `log-entry ${level}`;
-        
+    window.addLogEntry = function addLogEntry(level, message) {
+        const line = document.createElement('div');
+        line.className = `log-entry ${level}`;
         const timestamp = new Date().toLocaleTimeString();
-        logEntry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span>${message}`;
-        
-        logContent.appendChild(logEntry);
+        line.innerHTML = `<span class="log-timestamp">[${timestamp}]</span>${message}`;
+        logContent.appendChild(line);
         logContent.scrollTop = logContent.scrollHeight;
     };
 
-    clearLogsButton.addEventListener('click', () => {
+    ui.clearLogs.addEventListener('click', () => {
         logContent.innerHTML = '';
     });
-    
-    window.addLogEntry('info', 'Hayro PDF Demo initialized - Annotation tools available');
 
-    const originalConsole = {
+    const original = {
+        log: console.log,
+        info: console.info,
         warn: console.warn,
         error: console.error,
-        log: console.log,
-        info: console.info
     };
 
-    console.warn = function(...args) {
-        originalConsole.warn.apply(console, args);
+    console.log = (...args) => {
+        original.log(...args);
+        window.addLogEntry('info', args.join(' '));
+    };
+    console.info = (...args) => {
+        original.info(...args);
+        window.addLogEntry('info', args.join(' '));
+    };
+    console.warn = (...args) => {
+        original.warn(...args);
         window.addLogEntry('warn', args.join(' '));
     };
-
-    console.error = function(...args) {
-        originalConsole.error.apply(console, args);
+    console.error = (...args) => {
+        original.error(...args);
         window.addLogEntry('error', args.join(' '));
     };
 
-    console.log = function(...args) {
-        originalConsole.log.apply(console, args);
-        window.addLogEntry('info', args.join(' '));
-    };
-
-    console.info = function(...args) {
-        originalConsole.info.apply(console, args);
-        window.addLogEntry('info', args.join(' '));
-    };
+    window.addLogEntry('info', 'Hayro PDF Studio ready');
 }
 
-run().catch(console.error);
+run().catch((error) => {
+    console.error(error);
+});

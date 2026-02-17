@@ -53,4 +53,4 @@ While the main goal of `hayro` is rendering PDF files, the `hayro` project actua
 ```
 
 ## Demo
-A demo tool can be found at https://maxkferg.github.io/Hayro/. Please note that this is not intended to be a PDF viewer application: It misses many important features like zooming, selecting text and important optimizations for improving the user experience. It's really just meant as a quick way to test the rendering capabilities of `hayro`.
+A demo tool can be found at https://maxkferg.github.io/Hayro/. The demo is still intentionally lightweight, but now includes multi-page smooth scrolling, zoom controls, text selection, annotation undo/redo, and basic text/signature field authoring so larger workflows can be tested end-to-end.
