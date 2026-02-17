@@ -1,0 +1,20 @@
+[package]
+name = "hayro-annot"
+version = "0.1.0"
+description = "Annotation support for the hayro PDF library."
+authors = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+hayro-syntax = { workspace = true, features = ["std"] }
+hayro-write = { workspace = true }
+pdf-writer = { workspace = true }
+flate2 = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

@@ -1,17 +1,11 @@
 name: Deploy to GitHub Pages
 
 on:
-  # Manual trigger only
+  # Deploy on push to main/master
+  push:
+    branches: [ master, main ]
+  # Also allow manual trigger
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Deployment environment'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-        - production
-        - staging
 
 permissions:
   contents: read
@@ -29,39 +23,40 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+
+      - name: Setup Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: stable
-          override: true
-          
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-        
+
       - name: Build WASM module
         run: |
           cd hayro-demo
-          wasm-pack build --target web --out-dir www
-          
+          RUSTFLAGS="-C target-feature=+simd128" wasm-pack build --target web --out-dir www
+
       - name: Prepare deployment
         run: |
           cd hayro-demo
-          # Create deployment directory
           mkdir -p dist
-          
-          # Copy all static files
+
+          # Copy static files
           cp www/index.html dist/
           cp www/styles.css dist/
           cp www/index.js dist/
-          
+
           # Copy generated WASM files
           cp www/hayro_demo_bg.wasm dist/
           cp www/hayro_demo.js dist/
-          
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
-        
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
