@@ -171,10 +171,10 @@ fn render_annotation<'a>(
             return Some(stream);
         }
         // /N as dictionary: use /AS to select the right state.
-        if let Some(n_dict) = ap.get::<Dict<'_>>(N) {
-            if let Some(as_name) = annot.get::<hayro_syntax::object::Name>(AS) {
-                return n_dict.get::<Stream<'_>>(as_name.as_ref());
-            }
+        if let Some(n_dict) = ap.get::<Dict<'_>>(N)
+            && let Some(as_name) = annot.get::<hayro_syntax::object::Name>(AS)
+        {
+            return n_dict.get::<Stream<'_>>(as_name.as_ref());
         }
         None
     });
