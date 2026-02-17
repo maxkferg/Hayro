@@ -14,7 +14,8 @@ members = [
     "hayro-font",
     "hayro-fuzz",
     "hayro-postscript",
-    "hayro-cmap"
+    "hayro-cmap",
+    "hayro-annot"
 ]
 
 [workspace.package]
@@ -36,6 +37,7 @@ hayro-svg = { path = "hayro-svg", version = "0.3.0", default-features = false }
 hayro-write = { path = "hayro-write", version = "0.4.0", default-features = false }
 hayro-postscript = { path = "hayro-postscript", version = "0.1.0", default-features = false }
 hayro-cmap = { path = "hayro-cmap", version = "0.1.0", default-features = false }
+hayro-annot = { path = "hayro-annot", version = "0.1.0", default-features = false }
 
 bitflags = { version = "2.10" }
 bytemuck = { version = "1" }

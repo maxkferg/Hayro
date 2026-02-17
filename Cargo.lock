@@ -551,6 +551,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hayro-annot"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "hayro-syntax",
+ "hayro-write",
+ "log",
+ "pdf-writer",
+]
+
+[[package]]
 name = "hayro-ccitt"
 version = "0.2.0"
 
