@@ -130,7 +130,12 @@ impl PdfViewer {
         device_pixel_ratio: f32,
     ) -> Result<js_sys::Array, JsValue> {
         let page_idx = self.page_index_from_one_based(page)?;
-        self.render_page_fit_internal(page_idx, viewport_width, viewport_height, device_pixel_ratio)
+        self.render_page_fit_internal(
+            page_idx,
+            viewport_width,
+            viewport_height,
+            device_pixel_ratio,
+        )
     }
 
     /// Render a specific page (1-based) at a fixed zoom scale.
@@ -153,10 +158,7 @@ impl PdfViewer {
         device_pixel_ratio: f32,
     ) -> Result<js_sys::Array, JsValue> {
         let pdf = self.pdf.as_ref().ok_or("No PDF loaded")?;
-        let page = pdf
-            .pages()
-            .get(page_idx)
-            .ok_or("Page out of bounds")?;
+        let page = pdf.pages().get(page_idx).ok_or("Page out of bounds")?;
 
         let interpreter_settings = InterpreterSettings::default();
         let (base_width, base_height) = page.render_dimensions();
@@ -271,10 +273,7 @@ impl PdfViewer {
     pub fn get_page_info_for(&self, page: usize) -> Result<js_sys::Float32Array, JsValue> {
         let page_idx = self.page_index_from_one_based(page)?;
         let pdf = self.pdf.as_ref().ok_or("No PDF loaded")?;
-        let page = pdf
-            .pages()
-            .get(page_idx)
-            .ok_or("Page out of bounds")?;
+        let page = pdf.pages().get(page_idx).ok_or("Page out of bounds")?;
 
         let (width, height) = page.render_dimensions();
         let crop_box = page.intersected_crop_box();
@@ -614,4 +613,3 @@ impl PdfViewer {
         }
     }
 }
-

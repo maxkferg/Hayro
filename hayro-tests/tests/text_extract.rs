@@ -105,7 +105,9 @@ fn text_extraction_happy_path() {
         "expected extracted span to contain text, got {spans:?}"
     );
     assert!(
-        spans.iter().all(|span| span.bbox[2] >= span.bbox[0] && span.bbox[3] >= span.bbox[1]),
+        spans
+            .iter()
+            .all(|span| span.bbox[2] >= span.bbox[0] && span.bbox[3] >= span.bbox[1]),
         "expected normalized span bboxes, got {spans:?}"
     );
 }
@@ -119,7 +121,9 @@ fn text_extraction_includes_invisible_text() {
 
     let spans = extract_text_spans(&pdf.pages()[0], &test_settings());
     assert!(
-        spans.iter().any(|span| span.text.contains("Invisible Layer")),
+        spans
+            .iter()
+            .any(|span| span.text.contains("Invisible Layer")),
         "expected invisible text to be extracted, got {spans:?}"
     );
 }
