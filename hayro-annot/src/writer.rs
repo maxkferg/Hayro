@@ -144,8 +144,7 @@ pub fn save_annotations(
 
     // For each page that has annotations, write the annotation objects
     // and create /Annots arrays
-    let mut page_annot_arrays: std::collections::HashMap<usize, Ref> =
-        std::collections::HashMap::new();
+    let mut page_annot_arrays: HashMap<usize, Ref> = HashMap::new();
 
     // Use a chunk for annotation objects since we need fresh refs
     let mut annot_chunk = Chunk::new();

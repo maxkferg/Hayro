@@ -54,7 +54,7 @@ fn page_annotation_dicts<'a>(pdf: &'a hayro_syntax::Pdf, page_idx: usize) -> Vec
 }
 
 fn subtype_bytes(dict: &Dict<'_>) -> Vec<u8> {
-    dict.get::<Name>(b"Subtype")
+    dict.get::<Name>(b"Subtype".as_ref())
         .expect("annotation should have /Subtype")
         .as_ref()
         .to_vec()
@@ -74,7 +74,7 @@ fn markup_quadpoints_are_truncated_to_multiple_of_eight() {
     let pdf = save_and_parse(&input, &[(0, vec![highlight])]);
     let dicts = page_annotation_dicts(&pdf, 0);
     let quad = dicts[0]
-        .get::<Vec<f32>>(b"QuadPoints")
+        .get::<Vec<f32>>(b"QuadPoints".as_ref())
         .expect("highlight should have /QuadPoints");
     assert_eq!(
         quad.len(),
@@ -138,10 +138,13 @@ fn freetext_sets_contents_fallback_when_missing() {
     assert_eq!(subtype_bytes(dict), b"FreeText");
 
     let contents = dict
-        .get::<PdfString>(b"Contents")
+        .get::<PdfString>(b"Contents".as_ref())
         .expect("FreeText should have /Contents");
     assert_eq!(contents.as_bytes(), b"hello free text");
-    assert!(dict.contains_key(b"DA"), "FreeText should include /DA");
+    assert!(
+        dict.contains_key(b"DA".as_ref()),
+        "FreeText should include /DA"
+    );
 }
 
 #[test]
@@ -159,9 +162,9 @@ fn text_annotation_writes_icon_and_open_flag() {
     let pdf = save_and_parse(&input, &[(0, vec![text])]);
     let dict = &page_annotation_dicts(&pdf, 0)[0];
     assert_eq!(subtype_bytes(dict), b"Text");
-    assert_eq!(dict.get::<bool>(b"Open"), Some(true));
+    assert_eq!(dict.get::<bool>(b"Open".as_ref()), Some(true));
     let icon = dict
-        .get::<Name>(b"Name")
+        .get::<Name>(b"Name".as_ref())
         .expect("Text annotation should include /Name icon");
     assert_eq!(icon.as_ref(), b"Key");
 }
@@ -183,12 +186,14 @@ fn ink_annotation_writes_inklist_and_border_style_width() {
     assert_eq!(subtype_bytes(dict), b"Ink");
 
     let ink_list = dict
-        .get::<Array<'_>>(b"InkList")
+        .get::<Array<'_>>(b"InkList".as_ref())
         .expect("Ink annotation should have /InkList");
     assert_eq!(ink_list.raw_iter().count(), 1);
 
-    let bs = dict.get::<Dict<'_>>(b"BS").expect("Ink should have /BS");
-    assert_eq!(bs.get::<f32>(b"W"), Some(2.5));
+    let bs = dict
+        .get::<Dict<'_>>(b"BS".as_ref())
+        .expect("Ink should have /BS");
+    assert_eq!(bs.get::<f32>(b"W".as_ref()), Some(2.5));
 }
 
 #[test]
@@ -218,12 +223,14 @@ fn square_and_circle_write_ic_and_border_style() {
 
     for dict in dicts {
         assert!(
-            dict.contains_key(b"IC"),
+            dict.contains_key(b"IC".as_ref()),
             "shape annotation should include interior color"
         );
-        let bs = dict.get::<Dict<'_>>(b"BS").expect("shape should have /BS");
+        let bs = dict
+            .get::<Dict<'_>>(b"BS".as_ref())
+            .expect("shape should have /BS");
         assert!(
-            bs.get::<f32>(b"W").is_some(),
+            bs.get::<f32>(b"W".as_ref()).is_some(),
             "shape border style should include width"
         );
     }
@@ -246,13 +253,15 @@ fn line_annotation_writes_l_and_border_style() {
     let dict = &page_annotation_dicts(&pdf, 0)[0];
     assert_eq!(subtype_bytes(dict), b"Line");
     assert_eq!(
-        dict.get::<Vec<f32>>(b"L")
+        dict.get::<Vec<f32>>(b"L".as_ref())
             .expect("Line annotation should have /L")
             .len(),
         4
     );
-    let bs = dict.get::<Dict<'_>>(b"BS").expect("line should have /BS");
-    assert_eq!(bs.get::<f32>(b"W"), Some(4.0));
+    let bs = dict
+        .get::<Dict<'_>>(b"BS".as_ref())
+        .expect("line should have /BS");
+    assert_eq!(bs.get::<f32>(b"W".as_ref()), Some(4.0));
 }
 
 #[test]
@@ -271,17 +280,19 @@ fn link_uri_annotation_writes_uri_action() {
     let dict = &page_annotation_dicts(&pdf, 0)[0];
     assert_eq!(subtype_bytes(dict), b"Link");
 
-    let action = dict.get::<Dict<'_>>(b"A").expect("Link should have /A");
+    let action = dict
+        .get::<Dict<'_>>(b"A".as_ref())
+        .expect("Link should have /A");
     assert_eq!(
         action
-            .get::<Name>(b"S")
+            .get::<Name>(b"S".as_ref())
             .expect("action should have /S")
             .as_ref(),
         b"URI"
     );
     assert_eq!(
         action
-            .get::<PdfString>(b"URI")
+            .get::<PdfString>(b"URI".as_ref())
             .expect("action should have /URI")
             .as_bytes(),
         b"https://example.com"
@@ -302,10 +313,13 @@ fn link_destination_page_writes_dest_array() {
 
     let pdf = save_and_parse(&input, &[(0, vec![link])]);
     let dict = &page_annotation_dicts(&pdf, 0)[0];
-    assert!(dict.contains_key(b"Dest"), "Link should include /Dest");
+    assert!(
+        dict.contains_key(b"Dest".as_ref()),
+        "Link should include /Dest"
+    );
 
     let dest = dict
-        .get::<Array<'_>>(b"Dest")
+        .get::<Array<'_>>(b"Dest".as_ref())
         .expect("Link /Dest should be an array");
     let mut iter = dest.raw_iter();
 
@@ -361,24 +375,24 @@ fn modified_author_contents_and_flags_are_serialized() {
     let pdf = save_and_parse(&input, &[(0, vec![text])]);
     let dict = &page_annotation_dicts(&pdf, 0)[0];
     assert_eq!(
-        dict.get::<PdfString>(b"T")
+        dict.get::<PdfString>(b"T".as_ref())
             .expect("author should be written")
             .as_bytes(),
         b"qa"
     );
     assert_eq!(
-        dict.get::<PdfString>(b"Contents")
+        dict.get::<PdfString>(b"Contents".as_ref())
             .expect("contents should be written")
             .as_bytes(),
         b"hello"
     );
     assert_eq!(
-        dict.get::<PdfString>(b"M")
+        dict.get::<PdfString>(b"M".as_ref())
             .expect("modified date should be written")
             .as_bytes(),
         b"D:20260217120000Z"
     );
-    assert_eq!(dict.get::<i32>(b"F"), Some(5));
+    assert_eq!(dict.get::<i32>(b"F".as_ref()), Some(5));
 }
 
 #[test]
@@ -398,17 +412,18 @@ fn rect_color_and_opacity_are_normalized_and_clamped() {
     let dict = &page_annotation_dicts(&pdf, 0)[0];
 
     assert_eq!(
-        dict.get::<[f32; 4]>(b"Rect")
+        dict.get::<[f32; 4]>(b"Rect".as_ref())
             .expect("rect should be written in annotation"),
         [50.0, 20.0, 150.0, 100.0]
     );
     assert_eq!(
-        dict.get::<Vec<f32>>(b"C")
+        dict.get::<Vec<f32>>(b"C".as_ref())
             .expect("color should be present for highlight"),
         vec![0.0, 1.0, 0.25]
     );
     assert_eq!(
-        dict.get::<f32>(b"CA").expect("opacity should be present"),
+        dict.get::<f32>(b"CA".as_ref())
+            .expect("opacity should be present"),
         0.0
     );
 }
