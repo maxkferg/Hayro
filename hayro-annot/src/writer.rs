@@ -10,7 +10,7 @@ use crate::types::*;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use pdf_writer::{Chunk, Filter, Finish, Name, Rect, Ref};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
 /// An error that occurred during annotation saving.
@@ -20,6 +20,8 @@ pub enum SaveError {
     InvalidPdf,
     /// An invalid page index was specified.
     InvalidPageIndex(usize),
+    /// An invalid link destination page index was specified.
+    InvalidDestinationPage(usize),
     /// An I/O error occurred.
     IoError(String),
 }
@@ -29,6 +31,7 @@ impl core::fmt::Display for SaveError {
         match self {
             Self::InvalidPdf => write!(f, "invalid PDF"),
             Self::InvalidPageIndex(i) => write!(f, "invalid page index: {i}"),
+            Self::InvalidDestinationPage(i) => write!(f, "invalid destination page index: {i}"),
             Self::IoError(s) => write!(f, "I/O error: {s}"),
         }
     }
@@ -81,11 +84,21 @@ pub fn save_annotations(
     let pdf = Pdf::new(original_data.to_vec()).map_err(|_| SaveError::InvalidPdf)?;
     let pages = pdf.pages();
     let num_pages = pages.len();
+    let merged_page_annotations = merge_page_annotations(page_annotations);
 
     // Validate all page indices
-    for (page_idx, _) in page_annotations {
+    for (page_idx, annots) in &merged_page_annotations {
         if *page_idx >= num_pages {
             return Err(SaveError::InvalidPageIndex(*page_idx));
+        }
+
+        for annot in annots {
+            if let Annotation::Link(link) = annot
+                && let Some(dest_page) = link.dest_page
+                && dest_page >= num_pages
+            {
+                return Err(SaveError::InvalidDestinationPage(dest_page));
+            }
         }
     }
 
@@ -138,19 +151,20 @@ pub fn save_annotations(
     let mut annot_chunk = Chunk::new();
     let mut annot_refs_allocator = RefAllocator::new(next_ref.get());
 
-    for (page_idx, annots) in page_annotations {
+    for (page_idx, annots) in &merged_page_annotations {
         let mut this_page_annot_refs: Vec<Ref> = Vec::new();
 
         for annot in annots.iter() {
+            let sanitized = sanitize_annotation(annot);
             let annot_ref = annot_refs_allocator.alloc();
             let ap_stream_ref = annot_refs_allocator.alloc();
 
             // Generate appearance stream
-            let ap_content = generate_appearance(annot);
+            let ap_content = generate_appearance(&sanitized);
 
             if !ap_content.is_empty() {
                 let encoded = deflate_encode(&ap_content);
-                let base = annot.base();
+                let base = sanitized.base();
                 let bbox = Rect::new(
                     0.0,
                     0.0,
@@ -163,7 +177,7 @@ pub fn save_annotations(
                 xobj.filter(Filter::FlateDecode);
 
                 // For FreeText annotations, include Helvetica font resource
-                if matches!(annot, Annotation::FreeText(_)) {
+                if matches!(&sanitized, Annotation::FreeText(_)) {
                     let font_ref = annot_refs_allocator.alloc();
                     xobj.resources().fonts().pair(Name(b"Helv"), font_ref);
                     xobj.finish();
@@ -183,9 +197,10 @@ pub fn save_annotations(
             write_annotation_dict(
                 &mut annot_chunk,
                 annot_ref,
-                annot,
+                &sanitized,
                 ap_stream_ref,
                 !ap_content.is_empty(),
+                &page_refs,
             );
 
             this_page_annot_refs.push(annot_ref);
@@ -473,6 +488,7 @@ fn write_annotation_dict(
     annot: &Annotation,
     ap_stream_ref: Ref,
     has_appearance: bool,
+    page_refs: &[Ref],
 ) {
     let mut annot_dict = chunk.annotation(annot_ref);
     let base = annot.base();
@@ -497,6 +513,10 @@ fn write_annotation_dict(
 
     if let Some(contents) = &base.contents {
         annot_dict.contents(pdf_writer::TextStr(contents));
+    }
+
+    if let Some(modified) = &base.modified {
+        annot_dict.pair(Name(b"M"), pdf_writer::TextStr(modified));
     }
 
     if base.opacity < 1.0 {
@@ -538,6 +558,9 @@ fn write_annotation_dict(
                 Name(b"DA"),
                 pdf_writer::Str(ft.default_appearance.as_bytes()),
             );
+            if base.contents.is_none() && !ft.text.is_empty() {
+                annot_dict.contents(pdf_writer::TextStr(&ft.text));
+            }
         }
         Annotation::Ink(ink) => {
             annot_dict.pair(Name(b"Subtype"), Name(b"Ink"));
@@ -550,6 +573,7 @@ fn write_annotation_dict(
                 }
             }
             ink_list_arr.finish();
+            annot_dict.border_style().width(ink.line_width);
         }
         Annotation::Square(shape) => {
             annot_dict.subtype(pdf_writer::types::AnnotationType::Square);
@@ -598,9 +622,151 @@ fn write_annotation_dict(
                 let mut action = annot_dict.action();
                 action.action_type(pdf_writer::types::ActionType::Uri);
                 action.pair(Name(b"URI"), pdf_writer::Str(uri.as_bytes()));
+            } else if let Some(dest_page) = link.dest_page
+                && let Some(dest_ref) = page_refs.get(dest_page)
+            {
+                let mut dest = annot_dict.insert(Name(b"Dest")).array();
+                dest.item(*dest_ref);
+                dest.item(Name(b"Fit"));
+                dest.finish();
             }
         }
     }
 
     annot_dict.finish();
+}
+
+/// Merge duplicate page entries while preserving first-seen page order.
+fn merge_page_annotations(
+    page_annotations: &[(usize, Vec<Annotation>)],
+) -> Vec<(usize, Vec<Annotation>)> {
+    let mut merged = Vec::<(usize, Vec<Annotation>)>::new();
+    let mut page_to_merged_idx = HashMap::<usize, usize>::new();
+
+    for (page_idx, annots) in page_annotations {
+        if let Some(existing_idx) = page_to_merged_idx.get(page_idx) {
+            merged[*existing_idx].1.extend(annots.clone());
+        } else {
+            page_to_merged_idx.insert(*page_idx, merged.len());
+            merged.push((*page_idx, annots.clone()));
+        }
+    }
+
+    merged
+}
+
+fn sanitize_annotation(annotation: &Annotation) -> Annotation {
+    let mut sanitized = annotation.clone();
+
+    let base = sanitize_annotation_base(sanitized.base().clone());
+    match &mut sanitized {
+        Annotation::Highlight(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::Underline(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::StrikeOut(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::Squiggly(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::FreeText(a) => {
+            a.base = base;
+            if !a.font_size.is_finite() || a.font_size <= 0.0 {
+                a.font_size = 12.0;
+            }
+        }
+        Annotation::Ink(a) => {
+            a.base = base;
+            if !a.line_width.is_finite() || a.line_width <= 0.0 {
+                a.line_width = 1.0;
+            }
+        }
+        Annotation::Square(a) | Annotation::Circle(a) => {
+            a.base = base;
+            if !a.line_width.is_finite() || a.line_width <= 0.0 {
+                a.line_width = 1.0;
+            }
+            if let Some(ic) = a.interior_color {
+                a.interior_color = Some(clamp_color(ic));
+            }
+        }
+        Annotation::Line(a) => {
+            a.base = base;
+            if !a.line_width.is_finite() || a.line_width <= 0.0 {
+                a.line_width = 1.0;
+            }
+        }
+        Annotation::Text(a) => {
+            a.base = base;
+        }
+        Annotation::Link(a) => {
+            a.base = base;
+        }
+    }
+
+    sanitized
+}
+
+fn sanitize_annotation_base(mut base: AnnotationBase) -> AnnotationBase {
+    base.rect = normalize_rect(base.rect);
+    base.opacity = clamp_unit_interval(base.opacity, 1.0);
+    base.color = base.color.map(clamp_color);
+    base
+}
+
+fn clamp_color(color: AnnotColor) -> AnnotColor {
+    AnnotColor {
+        r: clamp_unit_interval(color.r, 0.0),
+        g: clamp_unit_interval(color.g, 0.0),
+        b: clamp_unit_interval(color.b, 0.0),
+    }
+}
+
+fn clamp_unit_interval(value: f32, default: f32) -> f32 {
+    if !value.is_finite() {
+        return default;
+    }
+
+    value.clamp(0.0, 1.0)
+}
+
+fn normalize_rect(rect: [f32; 4]) -> [f32; 4] {
+    let mut x0 = rect[0];
+    let mut y0 = rect[1];
+    let mut x1 = rect[2];
+    let mut y1 = rect[3];
+
+    if !x0.is_finite() {
+        x0 = 0.0;
+    }
+    if !y0.is_finite() {
+        y0 = 0.0;
+    }
+    if !x1.is_finite() {
+        x1 = x0;
+    }
+    if !y1.is_finite() {
+        y1 = y0;
+    }
+
+    [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)]
 }
