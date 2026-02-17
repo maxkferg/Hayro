@@ -10,6 +10,7 @@ use crate::types::*;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use pdf_writer::{Chunk, Filter, Finish, Name, Rect, Ref};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
 /// An error that occurred during annotation saving.
@@ -19,6 +20,8 @@ pub enum SaveError {
     InvalidPdf,
     /// An invalid page index was specified.
     InvalidPageIndex(usize),
+    /// An invalid link destination page index was specified.
+    InvalidDestinationPage(usize),
     /// An I/O error occurred.
     IoError(String),
 }
@@ -28,6 +31,7 @@ impl core::fmt::Display for SaveError {
         match self {
             Self::InvalidPdf => write!(f, "invalid PDF"),
             Self::InvalidPageIndex(i) => write!(f, "invalid page index: {i}"),
+            Self::InvalidDestinationPage(i) => write!(f, "invalid destination page index: {i}"),
             Self::IoError(s) => write!(f, "I/O error: {s}"),
         }
     }
@@ -80,11 +84,21 @@ pub fn save_annotations(
     let pdf = Pdf::new(original_data.to_vec()).map_err(|_| SaveError::InvalidPdf)?;
     let pages = pdf.pages();
     let num_pages = pages.len();
+    let merged_page_annotations = merge_page_annotations(page_annotations);
 
     // Validate all page indices
-    for (page_idx, _) in page_annotations {
+    for (page_idx, annots) in &merged_page_annotations {
         if *page_idx >= num_pages {
             return Err(SaveError::InvalidPageIndex(*page_idx));
+        }
+
+        for annot in annots {
+            if let Annotation::Link(link) = annot
+                && let Some(dest_page) = link.dest_page
+                && dest_page >= num_pages
+            {
+                return Err(SaveError::InvalidDestinationPage(dest_page));
+            }
         }
     }
 
@@ -130,26 +144,26 @@ pub fn save_annotations(
 
     // For each page that has annotations, write the annotation objects
     // and create /Annots arrays
-    let mut page_annot_arrays: std::collections::HashMap<usize, Ref> =
-        std::collections::HashMap::new();
+    let mut page_annot_arrays: HashMap<usize, Ref> = HashMap::new();
 
     // Use a chunk for annotation objects since we need fresh refs
     let mut annot_chunk = Chunk::new();
     let mut annot_refs_allocator = RefAllocator::new(next_ref.get());
 
-    for (page_idx, annots) in page_annotations {
+    for (page_idx, annots) in &merged_page_annotations {
         let mut this_page_annot_refs: Vec<Ref> = Vec::new();
 
         for annot in annots.iter() {
+            let sanitized = sanitize_annotation(annot);
             let annot_ref = annot_refs_allocator.alloc();
             let ap_stream_ref = annot_refs_allocator.alloc();
 
             // Generate appearance stream
-            let ap_content = generate_appearance(annot);
+            let ap_content = generate_appearance(&sanitized);
 
             if !ap_content.is_empty() {
                 let encoded = deflate_encode(&ap_content);
-                let base = annot.base();
+                let base = sanitized.base();
                 let bbox = Rect::new(
                     0.0,
                     0.0,
@@ -162,7 +176,7 @@ pub fn save_annotations(
                 xobj.filter(Filter::FlateDecode);
 
                 // For FreeText annotations, include Helvetica font resource
-                if matches!(annot, Annotation::FreeText(_)) {
+                if matches!(&sanitized, Annotation::FreeText(_)) {
                     let font_ref = annot_refs_allocator.alloc();
                     xobj.resources().fonts().pair(Name(b"Helv"), font_ref);
                     xobj.finish();
@@ -182,9 +196,10 @@ pub fn save_annotations(
             write_annotation_dict(
                 &mut annot_chunk,
                 annot_ref,
-                annot,
+                &sanitized,
                 ap_stream_ref,
                 !ap_content.is_empty(),
+                &page_refs,
             );
 
             this_page_annot_refs.push(annot_ref);
@@ -215,33 +230,23 @@ pub fn save_annotations(
     // Extend with annotation objects
     out_pdf.extend(&annot_chunk);
 
-    // Now we need to add /Annots to the page dictionaries.
-    // Since pdf-writer doesn't let us modify already-written objects,
-    // we need a different approach. We'll write the annotations as
-    // separate objects and then manually patch the page refs.
-    //
-    // Actually, the extracted pages are already written by hayro-write.
-    // We need to modify them to include /Annots. The simplest approach
-    // is to write a new version of the page dict that includes /Annots.
-    //
-    // But since we can't easily rewrite extracted pages through pdf-writer,
-    // let's use a simpler approach: create replacement page objects.
-
-    // For pages with annotations, we need to create replacement page dicts.
-    // We'll do this by building the raw bytes and inserting them.
-
-    // For now, let's use a simpler but effective approach:
-    // We'll create a minimal PDF that has annotations embedded.
-    // The annotations are written as separate objects, and we manually
-    // inject the /Annots key into the page dictionary bytes.
+    // Add /Annots to extracted page dictionaries in a post-processing pass.
+    // We then append a fresh xref/trailer section with corrected offsets.
 
     let mut pdf_bytes = out_pdf.finish();
 
-    // Post-process: inject /Annots references into page dictionaries
+    // Post-process: inject /Annots references into page dictionaries.
+    // This modifies object byte lengths, so we append an updated cross-reference
+    // table/trailer afterwards to keep offsets valid.
     for (page_idx, annots_ref) in &page_annot_arrays {
         let page_ref = page_refs[*page_idx];
-        // Find the page object in the output and inject /Annots
-        inject_annots_into_page(&mut pdf_bytes, page_ref, *annots_ref);
+        if !inject_annots_into_page(&mut pdf_bytes, page_ref, *annots_ref) {
+            return Err(SaveError::InvalidPdf);
+        }
+    }
+
+    if !page_annot_arrays.is_empty() {
+        append_updated_xref_and_trailer(&mut pdf_bytes, catalog_ref);
     }
 
     Ok(pdf_bytes)
@@ -251,27 +256,223 @@ pub fn save_annotations(
 ///
 /// This searches for the page object by its reference number and inserts
 /// the /Annots key before the end of the dictionary.
-fn inject_annots_into_page(pdf_bytes: &mut Vec<u8>, page_ref: Ref, annots_ref: Ref) {
+fn inject_annots_into_page(pdf_bytes: &mut Vec<u8>, page_ref: Ref, annots_ref: Ref) -> bool {
     let page_obj_marker = format!("{} 0 obj", page_ref.get());
     let annots_entry = format!("/Annots {} 0 R", annots_ref.get());
 
     // Find the page object
-    if let Some(obj_pos) = find_bytes(pdf_bytes, page_obj_marker.as_bytes()) {
-        // Find the end of the dictionary (>>) after the object marker
-        let search_start = obj_pos + page_obj_marker.len();
-        if let Some(dict_end) = find_bytes(&pdf_bytes[search_start..], b">>") {
-            let insert_pos = search_start + dict_end;
-            // Insert /Annots entry before >>
-            let insert_bytes = format!("\n  {annots_entry}\n");
-            let insert_bytes = insert_bytes.as_bytes();
+    let Some(obj_pos) = find_bytes(pdf_bytes, page_obj_marker.as_bytes()) else {
+        return false;
+    };
 
-            // Make room and insert
-            let old_len = pdf_bytes.len();
-            pdf_bytes.resize(old_len + insert_bytes.len(), 0);
-            pdf_bytes.copy_within(insert_pos..old_len, insert_pos + insert_bytes.len());
-            pdf_bytes[insert_pos..insert_pos + insert_bytes.len()].copy_from_slice(insert_bytes);
-        }
+    let search_start = obj_pos + page_obj_marker.len();
+    let Some(dict_start_rel) = find_bytes(&pdf_bytes[search_start..], b"<<") else {
+        return false;
+    };
+    let dict_start = search_start + dict_start_rel;
+
+    let Some(dict_end) = find_matching_dict_end(pdf_bytes, dict_start) else {
+        return false;
+    };
+
+    // Don't duplicate /Annots if this page dictionary already has one.
+    if find_bytes(&pdf_bytes[dict_start..dict_end], b"/Annots").is_some() {
+        return true;
     }
+
+    // Insert /Annots before the dictionary's matching closing ">>".
+    let insert_bytes = format!("\n  {annots_entry}\n").into_bytes();
+    let old_len = pdf_bytes.len();
+    pdf_bytes.resize(old_len + insert_bytes.len(), 0);
+    pdf_bytes.copy_within(dict_end..old_len, dict_end + insert_bytes.len());
+    pdf_bytes[dict_end..dict_end + insert_bytes.len()].copy_from_slice(&insert_bytes);
+    true
+}
+
+/// Find the byte index of the matching closing ">>" for a dictionary.
+///
+/// Returns the position of the first '>' in the closing ">>".
+fn find_matching_dict_end(bytes: &[u8], dict_start: usize) -> Option<usize> {
+    let mut idx = dict_start;
+    let mut depth = 0_i32;
+
+    while idx + 1 < bytes.len() {
+        if bytes[idx] == b'<' && bytes[idx + 1] == b'<' {
+            depth += 1;
+            idx += 2;
+            continue;
+        }
+
+        if bytes[idx] == b'>' && bytes[idx + 1] == b'>' {
+            depth -= 1;
+            let close_pos = idx;
+            idx += 2;
+            if depth == 0 {
+                return Some(close_pos);
+            }
+            continue;
+        }
+
+        idx += 1;
+    }
+
+    None
+}
+
+/// Append a fresh xref/trailer section with corrected object offsets.
+///
+/// This keeps the output valid even after post-processing object bytes.
+fn append_updated_xref_and_trailer(pdf_bytes: &mut Vec<u8>, catalog_ref: Ref) {
+    let obj_offsets = collect_object_offsets(pdf_bytes);
+    if obj_offsets.is_empty() {
+        return;
+    }
+
+    let xref_len = 1 + obj_offsets.keys().next_back().copied().unwrap_or(0);
+    let offsets = obj_offsets
+        .iter()
+        .map(|(id, offset)| (*id, *offset))
+        .collect::<Vec<_>>();
+    let prev_startxref = find_last_startxref(pdf_bytes);
+
+    let xref_offset = pdf_bytes.len() + 1;
+    pdf_bytes.push(b'\n');
+    pdf_bytes.extend_from_slice(format!("xref\n0 {xref_len}\n").as_bytes());
+
+    // Reconstruct a complete free-list and in-use table (same layout as pdf-writer).
+    let mut written = 0_i32;
+    if offsets.is_empty() {
+        pdf_bytes.extend_from_slice(b"0000000000 65535 f\r\n");
+    }
+
+    for (idx, (object_id, offset)) in offsets.iter().enumerate() {
+        let start = written;
+        for free_id in start..*object_id {
+            let mut next = free_id + 1;
+            if next == *object_id {
+                for (used_id, _) in &offsets[idx..] {
+                    if next < *used_id {
+                        break;
+                    }
+                    next = *used_id + 1;
+                }
+            }
+
+            let generation = if free_id == 0 { "65535" } else { "00000" };
+            pdf_bytes.extend_from_slice(
+                format!("{:010} {} f\r\n", next % xref_len, generation).as_bytes(),
+            );
+            written += 1;
+        }
+
+        pdf_bytes.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
+        written += 1;
+    }
+
+    pdf_bytes.extend_from_slice(b"trailer\n<<\n");
+    pdf_bytes.extend_from_slice(format!("  /Size {xref_len}\n").as_bytes());
+    pdf_bytes.extend_from_slice(format!("  /Root {} 0 R\n", catalog_ref.get()).as_bytes());
+    if let Some(prev) = prev_startxref {
+        pdf_bytes.extend_from_slice(format!("  /Prev {prev}\n").as_bytes());
+    }
+    pdf_bytes.extend_from_slice(b">>\n");
+    pdf_bytes.extend_from_slice(b"startxref\n");
+    pdf_bytes.extend_from_slice(format!("{xref_offset}\n").as_bytes());
+    pdf_bytes.extend_from_slice(b"%%EOF");
+}
+
+/// Collect all indirect object offsets by scanning object headers.
+fn collect_object_offsets(pdf_bytes: &[u8]) -> BTreeMap<i32, usize> {
+    let mut offsets = BTreeMap::new();
+    let mut line_start = 0;
+    let mut idx = 0;
+
+    while idx <= pdf_bytes.len() {
+        let line_end = idx == pdf_bytes.len() || pdf_bytes[idx] == b'\n' || pdf_bytes[idx] == b'\r';
+        if !line_end {
+            idx += 1;
+            continue;
+        }
+
+        if let Some(id) = parse_obj_header(&pdf_bytes[line_start..idx]) {
+            offsets.insert(id, line_start);
+        }
+
+        if idx < pdf_bytes.len()
+            && pdf_bytes[idx] == b'\r'
+            && idx + 1 < pdf_bytes.len()
+            && pdf_bytes[idx + 1] == b'\n'
+        {
+            idx += 2;
+            line_start = idx;
+            continue;
+        }
+
+        idx += 1;
+        line_start = idx;
+    }
+
+    offsets
+}
+
+/// Parse an indirect object header line like "12 0 obj".
+fn parse_obj_header(line: &[u8]) -> Option<i32> {
+    let mut i = 0;
+    while i < line.len() && line[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    if i >= line.len() || !line[i].is_ascii_digit() {
+        return None;
+    }
+
+    let id_start = i;
+    while i < line.len() && line[i].is_ascii_digit() {
+        i += 1;
+    }
+    let id = std::str::from_utf8(&line[id_start..i])
+        .ok()?
+        .parse::<i32>()
+        .ok()?;
+
+    if i + 6 > line.len() || &line[i..i + 6] != b" 0 obj" {
+        return None;
+    }
+    i += 6;
+
+    while i < line.len() {
+        if !line[i].is_ascii_whitespace() {
+            return None;
+        }
+        i += 1;
+    }
+
+    Some(id)
+}
+
+/// Parse the last startxref value from the current PDF bytes.
+fn find_last_startxref(pdf_bytes: &[u8]) -> Option<usize> {
+    let marker = b"startxref";
+    let marker_pos = pdf_bytes.windows(marker.len()).rposition(|w| w == marker)?;
+    let mut idx = marker_pos + marker.len();
+
+    while idx < pdf_bytes.len() && pdf_bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+
+    let start = idx;
+    while idx < pdf_bytes.len() && pdf_bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+
+    if start == idx {
+        return None;
+    }
+
+    std::str::from_utf8(&pdf_bytes[start..idx])
+        .ok()?
+        .parse()
+        .ok()
 }
 
 /// Find the position of a byte pattern in a byte slice.
@@ -286,6 +487,7 @@ fn write_annotation_dict(
     annot: &Annotation,
     ap_stream_ref: Ref,
     has_appearance: bool,
+    page_refs: &[Ref],
 ) {
     let mut annot_dict = chunk.annotation(annot_ref);
     let base = annot.base();
@@ -310,6 +512,10 @@ fn write_annotation_dict(
 
     if let Some(contents) = &base.contents {
         annot_dict.contents(pdf_writer::TextStr(contents));
+    }
+
+    if let Some(modified) = &base.modified {
+        annot_dict.pair(Name(b"M"), pdf_writer::TextStr(modified));
     }
 
     if base.opacity < 1.0 {
@@ -351,6 +557,9 @@ fn write_annotation_dict(
                 Name(b"DA"),
                 pdf_writer::Str(ft.default_appearance.as_bytes()),
             );
+            if base.contents.is_none() && !ft.text.is_empty() {
+                annot_dict.contents(pdf_writer::TextStr(&ft.text));
+            }
         }
         Annotation::Ink(ink) => {
             annot_dict.pair(Name(b"Subtype"), Name(b"Ink"));
@@ -363,6 +572,7 @@ fn write_annotation_dict(
                 }
             }
             ink_list_arr.finish();
+            annot_dict.border_style().width(ink.line_width);
         }
         Annotation::Square(shape) => {
             annot_dict.subtype(pdf_writer::types::AnnotationType::Square);
@@ -411,9 +621,151 @@ fn write_annotation_dict(
                 let mut action = annot_dict.action();
                 action.action_type(pdf_writer::types::ActionType::Uri);
                 action.pair(Name(b"URI"), pdf_writer::Str(uri.as_bytes()));
+            } else if let Some(dest_page) = link.dest_page
+                && let Some(dest_ref) = page_refs.get(dest_page)
+            {
+                let mut dest = annot_dict.insert(Name(b"Dest")).array();
+                dest.item(*dest_ref);
+                dest.item(Name(b"Fit"));
+                dest.finish();
             }
         }
     }
 
     annot_dict.finish();
+}
+
+/// Merge duplicate page entries while preserving first-seen page order.
+fn merge_page_annotations(
+    page_annotations: &[(usize, Vec<Annotation>)],
+) -> Vec<(usize, Vec<Annotation>)> {
+    let mut merged = Vec::<(usize, Vec<Annotation>)>::new();
+    let mut page_to_merged_idx = HashMap::<usize, usize>::new();
+
+    for (page_idx, annots) in page_annotations {
+        if let Some(existing_idx) = page_to_merged_idx.get(page_idx) {
+            merged[*existing_idx].1.extend(annots.clone());
+        } else {
+            page_to_merged_idx.insert(*page_idx, merged.len());
+            merged.push((*page_idx, annots.clone()));
+        }
+    }
+
+    merged
+}
+
+fn sanitize_annotation(annotation: &Annotation) -> Annotation {
+    let mut sanitized = annotation.clone();
+
+    let base = sanitize_annotation_base(sanitized.base().clone());
+    match &mut sanitized {
+        Annotation::Highlight(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::Underline(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::StrikeOut(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::Squiggly(a) => {
+            a.base = base;
+            let rem = a.quad_points.len() % 8;
+            if rem != 0 {
+                a.quad_points.truncate(a.quad_points.len() - rem);
+            }
+        }
+        Annotation::FreeText(a) => {
+            a.base = base;
+            if !a.font_size.is_finite() || a.font_size <= 0.0 {
+                a.font_size = 12.0;
+            }
+        }
+        Annotation::Ink(a) => {
+            a.base = base;
+            if !a.line_width.is_finite() || a.line_width <= 0.0 {
+                a.line_width = 1.0;
+            }
+        }
+        Annotation::Square(a) | Annotation::Circle(a) => {
+            a.base = base;
+            if !a.line_width.is_finite() || a.line_width <= 0.0 {
+                a.line_width = 1.0;
+            }
+            if let Some(ic) = a.interior_color {
+                a.interior_color = Some(clamp_color(ic));
+            }
+        }
+        Annotation::Line(a) => {
+            a.base = base;
+            if !a.line_width.is_finite() || a.line_width <= 0.0 {
+                a.line_width = 1.0;
+            }
+        }
+        Annotation::Text(a) => {
+            a.base = base;
+        }
+        Annotation::Link(a) => {
+            a.base = base;
+        }
+    }
+
+    sanitized
+}
+
+fn sanitize_annotation_base(mut base: AnnotationBase) -> AnnotationBase {
+    base.rect = normalize_rect(base.rect);
+    base.opacity = clamp_unit_interval(base.opacity, 1.0);
+    base.color = base.color.map(clamp_color);
+    base
+}
+
+fn clamp_color(color: AnnotColor) -> AnnotColor {
+    AnnotColor {
+        r: clamp_unit_interval(color.r, 0.0),
+        g: clamp_unit_interval(color.g, 0.0),
+        b: clamp_unit_interval(color.b, 0.0),
+    }
+}
+
+fn clamp_unit_interval(value: f32, default: f32) -> f32 {
+    if !value.is_finite() {
+        return default;
+    }
+
+    value.clamp(0.0, 1.0)
+}
+
+fn normalize_rect(rect: [f32; 4]) -> [f32; 4] {
+    let mut x0 = rect[0];
+    let mut y0 = rect[1];
+    let mut x1 = rect[2];
+    let mut y1 = rect[3];
+
+    if !x0.is_finite() {
+        x0 = 0.0;
+    }
+    if !y0.is_finite() {
+        y0 = 0.0;
+    }
+    if !x1.is_finite() {
+        x1 = x0;
+    }
+    if !y1.is_finite() {
+        y1 = y0;
+    }
+
+    [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)]
 }
