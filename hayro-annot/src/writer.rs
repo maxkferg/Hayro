@@ -10,7 +10,7 @@ use crate::types::*;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use pdf_writer::{Chunk, Filter, Finish, Name, Rect, Ref};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
 /// An error that occurred during annotation saving.
@@ -22,6 +22,10 @@ pub enum SaveError {
     InvalidPageIndex(usize),
     /// An invalid link destination page index was specified.
     InvalidDestinationPage(usize),
+    /// A form field name was invalid.
+    InvalidFieldName,
+    /// A form field name appeared more than once.
+    DuplicateFieldName(String),
     /// An I/O error occurred.
     IoError(String),
 }
@@ -32,6 +36,8 @@ impl core::fmt::Display for SaveError {
             Self::InvalidPdf => write!(f, "invalid PDF"),
             Self::InvalidPageIndex(i) => write!(f, "invalid page index: {i}"),
             Self::InvalidDestinationPage(i) => write!(f, "invalid destination page index: {i}"),
+            Self::InvalidFieldName => write!(f, "invalid form field name"),
+            Self::DuplicateFieldName(name) => write!(f, "duplicate form field name: {name}"),
             Self::IoError(s) => write!(f, "I/O error: {s}"),
         }
     }
@@ -87,6 +93,7 @@ pub fn save_annotations(
     let merged_page_annotations = merge_page_annotations(page_annotations);
 
     // Validate all page indices
+    let mut form_field_names = HashSet::new();
     for (page_idx, annots) in &merged_page_annotations {
         if *page_idx >= num_pages {
             return Err(SaveError::InvalidPageIndex(*page_idx));
@@ -98,6 +105,22 @@ pub fn save_annotations(
                 && dest_page >= num_pages
             {
                 return Err(SaveError::InvalidDestinationPage(dest_page));
+            }
+
+            let field_name = match annot {
+                Annotation::TextField(field) => Some(field.field_name.trim()),
+                Annotation::SignatureField(field) => Some(field.field_name.trim()),
+                _ => None,
+            };
+
+            if let Some(field_name) = field_name {
+                if field_name.is_empty() {
+                    return Err(SaveError::InvalidFieldName);
+                }
+
+                if !form_field_names.insert(field_name.to_string()) {
+                    return Err(SaveError::DuplicateFieldName(field_name.to_string()));
+                }
             }
         }
     }
@@ -145,6 +168,8 @@ pub fn save_annotations(
     // For each page that has annotations, write the annotation objects
     // and create /Annots arrays
     let mut page_annot_arrays: HashMap<usize, Ref> = HashMap::new();
+    let mut acro_field_refs: Vec<Ref> = Vec::new();
+    let mut has_signature_fields = false;
 
     // Use a chunk for annotation objects since we need fresh refs
     let mut annot_chunk = Chunk::new();
@@ -152,10 +177,17 @@ pub fn save_annotations(
 
     for (page_idx, annots) in &merged_page_annotations {
         let mut this_page_annot_refs: Vec<Ref> = Vec::new();
+        let page_ref = page_refs[*page_idx];
 
         for annot in annots.iter() {
             let sanitized = sanitize_annotation(annot);
             let annot_ref = annot_refs_allocator.alloc();
+            let field_ref = match sanitized {
+                Annotation::TextField(_) | Annotation::SignatureField(_) => {
+                    Some(annot_refs_allocator.alloc())
+                }
+                _ => None,
+            };
             let ap_stream_ref = annot_refs_allocator.alloc();
 
             // Generate appearance stream
@@ -175,8 +207,13 @@ pub fn save_annotations(
                 xobj.bbox(bbox);
                 xobj.filter(Filter::FlateDecode);
 
-                // For FreeText annotations, include Helvetica font resource
-                if matches!(&sanitized, Annotation::FreeText(_)) {
+                // For text-based appearances include Helvetica font resource.
+                if matches!(
+                    &sanitized,
+                    Annotation::FreeText(_)
+                        | Annotation::TextField(_)
+                        | Annotation::SignatureField(_)
+                ) {
                     let font_ref = annot_refs_allocator.alloc();
                     xobj.resources().fonts().pair(Name(b"Helv"), font_ref);
                     xobj.finish();
@@ -200,8 +237,16 @@ pub fn save_annotations(
                 ap_stream_ref,
                 !ap_content.is_empty(),
                 &page_refs,
+                page_ref,
+                field_ref,
             );
 
+            if let Some(field_ref) = field_ref {
+                acro_field_refs.push(field_ref);
+            }
+            if matches!(sanitized, Annotation::SignatureField(_)) {
+                has_signature_fields = true;
+            }
             this_page_annot_refs.push(annot_ref);
         }
 
@@ -215,6 +260,24 @@ pub fn save_annotations(
             arr.finish();
             page_annot_arrays.insert(*page_idx, annots_arr_ref);
         }
+    }
+
+    let mut acro_form_ref = None;
+    if !acro_field_refs.is_empty() {
+        let acro_ref = annot_refs_allocator.alloc();
+        let mut acro_dict = annot_chunk.indirect(acro_ref).dict();
+        let mut fields = acro_dict.insert(Name(b"Fields")).array();
+        for field_ref in &acro_field_refs {
+            fields.item(*field_ref);
+        }
+        fields.finish();
+        acro_dict.pair(Name(b"NeedAppearances"), true);
+        acro_dict.pair(Name(b"DA"), pdf_writer::Str(b"0 0 0 rg /Helv 10 Tf"));
+        if has_signature_fields {
+            acro_dict.pair(Name(b"SigFlags"), 3_i32);
+        }
+        acro_dict.finish();
+        acro_form_ref = Some(acro_ref);
     }
 
     // Write page tree
@@ -232,7 +295,6 @@ pub fn save_annotations(
 
     // Add /Annots to extracted page dictionaries in a post-processing pass.
     // We then append a fresh xref/trailer section with corrected offsets.
-
     let mut pdf_bytes = out_pdf.finish();
 
     // Post-process: inject /Annots references into page dictionaries.
@@ -245,7 +307,13 @@ pub fn save_annotations(
         }
     }
 
-    if !page_annot_arrays.is_empty() {
+    if let Some(acro_form_ref) = acro_form_ref
+        && !inject_acro_form_into_catalog(&mut pdf_bytes, catalog_ref, acro_form_ref)
+    {
+        return Err(SaveError::InvalidPdf);
+    }
+
+    if !page_annot_arrays.is_empty() || acro_form_ref.is_some() {
         append_updated_xref_and_trailer(&mut pdf_bytes, catalog_ref);
     }
 
@@ -282,6 +350,40 @@ fn inject_annots_into_page(pdf_bytes: &mut Vec<u8>, page_ref: Ref, annots_ref: R
 
     // Insert /Annots before the dictionary's matching closing ">>".
     let insert_bytes = format!("\n  {annots_entry}\n").into_bytes();
+    let old_len = pdf_bytes.len();
+    pdf_bytes.resize(old_len + insert_bytes.len(), 0);
+    pdf_bytes.copy_within(dict_end..old_len, dict_end + insert_bytes.len());
+    pdf_bytes[dict_end..dict_end + insert_bytes.len()].copy_from_slice(&insert_bytes);
+    true
+}
+
+/// Inject an /AcroForm reference into the catalog dictionary.
+fn inject_acro_form_into_catalog(
+    pdf_bytes: &mut Vec<u8>,
+    catalog_ref: Ref,
+    acro_form_ref: Ref,
+) -> bool {
+    let catalog_obj_marker = format!("{} 0 obj", catalog_ref.get());
+    let acro_entry = format!("/AcroForm {} 0 R", acro_form_ref.get());
+
+    let Some(obj_pos) = find_bytes(pdf_bytes, catalog_obj_marker.as_bytes()) else {
+        return false;
+    };
+
+    let search_start = obj_pos + catalog_obj_marker.len();
+    let Some(dict_start_rel) = find_bytes(&pdf_bytes[search_start..], b"<<") else {
+        return false;
+    };
+    let dict_start = search_start + dict_start_rel;
+    let Some(dict_end) = find_matching_dict_end(pdf_bytes, dict_start) else {
+        return false;
+    };
+
+    if find_bytes(&pdf_bytes[dict_start..dict_end], b"/AcroForm").is_some() {
+        return true;
+    }
+
+    let insert_bytes = format!("\n  {acro_entry}\n").into_bytes();
     let old_len = pdf_bytes.len();
     pdf_bytes.resize(old_len + insert_bytes.len(), 0);
     pdf_bytes.copy_within(dict_end..old_len, dict_end + insert_bytes.len());
@@ -488,7 +590,28 @@ fn write_annotation_dict(
     ap_stream_ref: Ref,
     has_appearance: bool,
     page_refs: &[Ref],
+    page_ref: Ref,
+    field_ref: Option<Ref>,
 ) {
+    enum PendingFieldWrite {
+        Text {
+            field_ref: Ref,
+            field_name: String,
+            value: Option<String>,
+            default_value: Option<String>,
+            max_len: Option<u32>,
+            default_appearance: String,
+            flags: u32,
+        },
+        Signature {
+            field_ref: Ref,
+            field_name: String,
+            tooltip: Option<String>,
+            required: bool,
+        },
+    }
+
+    let mut pending_field_write = None;
     let mut annot_dict = chunk.annotation(annot_ref);
     let base = annot.base();
 
@@ -517,6 +640,7 @@ fn write_annotation_dict(
     if let Some(modified) = &base.modified {
         annot_dict.pair(Name(b"M"), pdf_writer::TextStr(modified));
     }
+    annot_dict.pair(Name(b"P"), page_ref);
 
     if base.opacity < 1.0 {
         annot_dict.pair(Name(b"CA"), base.opacity);
@@ -630,9 +754,111 @@ fn write_annotation_dict(
                 dest.finish();
             }
         }
+        Annotation::TextField(field) => {
+            annot_dict.pair(Name(b"Subtype"), Name(b"Widget"));
+            if let Some(field_ref) = field_ref {
+                annot_dict.pair(Name(b"Parent"), field_ref);
+            }
+
+            if let Some(max_len) = field.max_len {
+                annot_dict.pair(Name(b"MaxLen"), max_len as i32);
+            }
+
+            if let Some(field_ref) = field_ref {
+                let mut flags = 0_u32;
+                if field.read_only {
+                    flags |= 1;
+                }
+                if field.required {
+                    flags |= 1 << 1;
+                }
+                if field.multiline {
+                    flags |= 1 << 12;
+                }
+                pending_field_write = Some(PendingFieldWrite::Text {
+                    field_ref,
+                    field_name: field.field_name.clone(),
+                    value: field.value.clone(),
+                    default_value: field.default_value.clone(),
+                    max_len: field.max_len,
+                    default_appearance: field.default_appearance.clone(),
+                    flags,
+                });
+            }
+        }
+        Annotation::SignatureField(field) => {
+            annot_dict.pair(Name(b"Subtype"), Name(b"Widget"));
+            if let Some(field_ref) = field_ref {
+                annot_dict.pair(Name(b"Parent"), field_ref);
+            }
+
+            if let Some(field_ref) = field_ref {
+                pending_field_write = Some(PendingFieldWrite::Signature {
+                    field_ref,
+                    field_name: field.field_name.clone(),
+                    tooltip: field.tooltip.clone(),
+                    required: field.required,
+                });
+            }
+        }
     }
 
     annot_dict.finish();
+
+    if let Some(pending) = pending_field_write {
+        match pending {
+            PendingFieldWrite::Text {
+                field_ref,
+                field_name,
+                value,
+                default_value,
+                max_len,
+                default_appearance,
+                flags,
+            } => {
+                let mut field_dict = chunk.indirect(field_ref).dict();
+                field_dict.pair(Name(b"FT"), Name(b"Tx"));
+                field_dict.pair(Name(b"T"), pdf_writer::TextStr(&field_name));
+                field_dict.pair(Name(b"DA"), pdf_writer::Str(default_appearance.as_bytes()));
+                let mut kids = field_dict.insert(Name(b"Kids")).array();
+                kids.item(annot_ref);
+                kids.finish();
+                if let Some(value) = &value {
+                    field_dict.pair(Name(b"V"), pdf_writer::TextStr(value));
+                }
+                if let Some(default_value) = &default_value {
+                    field_dict.pair(Name(b"DV"), pdf_writer::TextStr(default_value));
+                }
+                if let Some(max_len) = max_len {
+                    field_dict.pair(Name(b"MaxLen"), max_len as i32);
+                }
+                if flags != 0 {
+                    field_dict.pair(Name(b"Ff"), flags as i32);
+                }
+                field_dict.finish();
+            }
+            PendingFieldWrite::Signature {
+                field_ref,
+                field_name,
+                tooltip,
+                required,
+            } => {
+                let mut field_dict = chunk.indirect(field_ref).dict();
+                field_dict.pair(Name(b"FT"), Name(b"Sig"));
+                field_dict.pair(Name(b"T"), pdf_writer::TextStr(&field_name));
+                let mut kids = field_dict.insert(Name(b"Kids")).array();
+                kids.item(annot_ref);
+                kids.finish();
+                if let Some(tooltip) = &tooltip {
+                    field_dict.pair(Name(b"TU"), pdf_writer::TextStr(tooltip));
+                }
+                if required {
+                    field_dict.pair(Name(b"Ff"), 2_i32);
+                }
+                field_dict.finish();
+            }
+        }
+    }
 }
 
 /// Merge duplicate page entries while preserving first-seen page order.
@@ -719,6 +945,17 @@ fn sanitize_annotation(annotation: &Annotation) -> Annotation {
         }
         Annotation::Link(a) => {
             a.base = base;
+        }
+        Annotation::TextField(a) => {
+            a.base = base;
+            a.field_name = a.field_name.trim().to_string();
+            if a.default_appearance.trim().is_empty() {
+                a.default_appearance = "0 0 0 rg /Helv 10 Tf".to_string();
+            }
+        }
+        Annotation::SignatureField(a) => {
+            a.base = base;
+            a.field_name = a.field_name.trim().to_string();
         }
     }
 

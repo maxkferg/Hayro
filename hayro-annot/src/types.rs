@@ -92,6 +92,10 @@ pub enum Annotation {
     Text(TextAnnot),
     /// A link annotation.
     Link(LinkAnnot),
+    /// A text form field widget annotation.
+    TextField(TextFieldAnnot),
+    /// A signature form field widget annotation.
+    SignatureField(SignatureFieldAnnot),
 }
 
 impl Annotation {
@@ -109,6 +113,8 @@ impl Annotation {
             Self::Line(a) => &a.base,
             Self::Text(a) => &a.base,
             Self::Link(a) => &a.base,
+            Self::TextField(a) => &a.base,
+            Self::SignatureField(a) => &a.base,
         }
     }
 }
@@ -220,4 +226,40 @@ pub struct LinkAnnot {
     pub uri: Option<String>,
     /// The destination page index (0-based).
     pub dest_page: Option<usize>,
+}
+
+/// A text form field (`/FT /Tx`) represented by a widget annotation.
+#[derive(Debug, Clone)]
+pub struct TextFieldAnnot {
+    /// Base annotation fields.
+    pub base: AnnotationBase,
+    /// The field name (`/T`).
+    pub field_name: String,
+    /// Current field value (`/V`), if any.
+    pub value: Option<String>,
+    /// Default field value (`/DV`), if any.
+    pub default_value: Option<String>,
+    /// Maximum text length (`/MaxLen`), if any.
+    pub max_len: Option<u32>,
+    /// Default appearance string (`/DA`).
+    pub default_appearance: String,
+    /// Whether the field is read-only.
+    pub read_only: bool,
+    /// Whether the field is required.
+    pub required: bool,
+    /// Whether the field supports multiple lines.
+    pub multiline: bool,
+}
+
+/// A signature form field (`/FT /Sig`) represented by a widget annotation.
+#[derive(Debug, Clone)]
+pub struct SignatureFieldAnnot {
+    /// Base annotation fields.
+    pub base: AnnotationBase,
+    /// The field name (`/T`).
+    pub field_name: String,
+    /// Optional tooltip (`/TU`).
+    pub tooltip: Option<String>,
+    /// Whether the field is required.
+    pub required: bool,
 }
