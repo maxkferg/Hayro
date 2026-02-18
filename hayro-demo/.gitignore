@@ -10,5 +10,8 @@ www/package.json
 dist/
 target/
 
+test-results/
+playwright-report/
+
 .DS_Store
 Thumbs.db
