@@ -357,6 +357,156 @@ fn invalid_destination_page_returns_error() {
 }
 
 #[test]
+fn text_field_creation_writes_acroform_and_fields() {
+    let input = create_blank_pdf(1);
+    let text_field = Annotation::TextField(TextFieldAnnot {
+        base: AnnotationBase {
+            rect: [40.0, 40.0, 220.0, 72.0],
+            ..Default::default()
+        },
+        field_name: "customer_name".to_string(),
+        value: Some("Ada".to_string()),
+        default_value: Some("".to_string()),
+        max_len: Some(64),
+        default_appearance: "0 0 0 rg /Helv 10 Tf".to_string(),
+        read_only: false,
+        required: true,
+        multiline: false,
+    });
+
+    let saved = save_annotations(&input, &[(0, vec![text_field])]).expect("save should succeed");
+    let pdf = hayro_syntax::Pdf::new(saved).expect("saved pdf should parse");
+
+    let root = pdf
+        .xref()
+        .get::<Dict<'_>>(pdf.xref().root_id())
+        .expect("catalog should parse");
+    let acro_form = root
+        .get::<Dict<'_>>(b"AcroForm".as_ref())
+        .expect("catalog should include /AcroForm");
+    let fields = acro_form
+        .get::<Array<'_>>(b"Fields".as_ref())
+        .expect("AcroForm should include /Fields");
+    assert_eq!(fields.raw_iter().count(), 1, "expected one field");
+
+    let field_dict = fields
+        .iter::<Dict<'_>>()
+        .next()
+        .expect("field entry should resolve to dictionary");
+    assert_eq!(
+        field_dict
+            .get::<Name>(b"FT".as_ref())
+            .expect("field should include /FT")
+            .as_ref(),
+        b"Tx"
+    );
+    assert_eq!(
+        field_dict
+            .get::<PdfString>(b"T".as_ref())
+            .expect("field should include /T")
+            .as_bytes(),
+        b"customer_name"
+    );
+}
+
+#[test]
+fn signature_field_sets_sigflags_and_sig_ft() {
+    let input = create_blank_pdf(1);
+    let signature_field = Annotation::SignatureField(SignatureFieldAnnot {
+        base: AnnotationBase {
+            rect: [40.0, 120.0, 260.0, 180.0],
+            ..Default::default()
+        },
+        field_name: "customer_signature".to_string(),
+        tooltip: Some("Sign here".to_string()),
+        required: true,
+    });
+
+    let saved =
+        save_annotations(&input, &[(0, vec![signature_field])]).expect("save should succeed");
+    let pdf = hayro_syntax::Pdf::new(saved).expect("saved pdf should parse");
+
+    let root = pdf
+        .xref()
+        .get::<Dict<'_>>(pdf.xref().root_id())
+        .expect("catalog should parse");
+    let acro_form = root
+        .get::<Dict<'_>>(b"AcroForm".as_ref())
+        .expect("catalog should include /AcroForm");
+    assert_eq!(acro_form.get::<i32>(b"SigFlags".as_ref()), Some(3));
+
+    let field_dict = acro_form
+        .get::<Array<'_>>(b"Fields".as_ref())
+        .expect("AcroForm should include /Fields")
+        .iter::<Dict<'_>>()
+        .next()
+        .expect("signature field dictionary should be present");
+    assert_eq!(
+        field_dict
+            .get::<Name>(b"FT".as_ref())
+            .expect("field should include /FT")
+            .as_ref(),
+        b"Sig"
+    );
+}
+
+#[test]
+fn duplicate_form_field_names_return_error() {
+    let input = create_blank_pdf(1);
+    let first = Annotation::TextField(TextFieldAnnot {
+        base: AnnotationBase {
+            rect: [20.0, 20.0, 120.0, 44.0],
+            ..Default::default()
+        },
+        field_name: "same".to_string(),
+        value: None,
+        default_value: None,
+        max_len: None,
+        default_appearance: "0 0 0 rg /Helv 10 Tf".to_string(),
+        read_only: false,
+        required: false,
+        multiline: false,
+    });
+    let second = Annotation::SignatureField(SignatureFieldAnnot {
+        base: AnnotationBase {
+            rect: [20.0, 60.0, 120.0, 100.0],
+            ..Default::default()
+        },
+        field_name: "same".to_string(),
+        tooltip: None,
+        required: false,
+    });
+
+    let result = save_annotations(&input, &[(0, vec![first, second])]);
+    assert!(matches!(
+        result,
+        Err(SaveError::DuplicateFieldName(name)) if name == "same"
+    ));
+}
+
+#[test]
+fn empty_form_field_name_returns_error() {
+    let input = create_blank_pdf(1);
+    let field = Annotation::TextField(TextFieldAnnot {
+        base: AnnotationBase {
+            rect: [20.0, 20.0, 120.0, 44.0],
+            ..Default::default()
+        },
+        field_name: "   ".to_string(),
+        value: None,
+        default_value: None,
+        max_len: None,
+        default_appearance: "0 0 0 rg /Helv 10 Tf".to_string(),
+        read_only: false,
+        required: false,
+        multiline: false,
+    });
+
+    let result = save_annotations(&input, &[(0, vec![field])]);
+    assert!(matches!(result, Err(SaveError::InvalidFieldName)));
+}
+
+#[test]
 fn modified_author_contents_and_flags_are_serialized() {
     let input = create_blank_pdf(1);
     let text = Annotation::Text(TextAnnot {

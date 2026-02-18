@@ -3,68 +3,101 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hayro PDF Demo</title>
+    <title>Hayro PDF Studio</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="app">
-        <div id="file-selector">
-            <div id="drop-zone">
-                <div class="drop-content">
-                    <div class="drop-icon">📄</div>
-                    <p>Drop PDF here or click to select</p>
-                </div>
-                <input type="file" id="file-input" accept=".pdf" style="display: none;">
-            </div>
-        </div>
-        
-        <div id="viewer" style="display: none;">
-            <div id="canvas-container">
-                <canvas id="pdf-canvas"></canvas>
-                <canvas id="annotation-canvas"></canvas>
-            </div>
-            
-            <div id="toolbar">
-                <div id="tool-group">
-                    <button id="tool-select" class="tool-btn active" title="Select (V)">🖱️</button>
-                    <button id="tool-highlight" class="tool-btn" title="Highlight (H)">🖍️</button>
-                    <button id="tool-rectangle" class="tool-btn" title="Rectangle (R)">⬜</button>
-                    <button id="tool-ink" class="tool-btn" title="Pencil (P)">✏️</button>
-                    <button id="tool-text" class="tool-btn" title="Text (T)">📝</button>
-                </div>
-                <div id="color-group">
-                    <button class="color-btn" data-color="1,1,0" style="background:#ffff00" title="Yellow"></button>
-                    <button class="color-btn active" data-color="1,0,0" style="background:#ff0000" title="Red"></button>
-                    <button class="color-btn" data-color="0,0,1" style="background:#0000ff" title="Blue"></button>
-                    <button class="color-btn" data-color="0,0.7,0" style="background:#00b300" title="Green"></button>
-                    <button class="color-btn" data-color="0,0,0" style="background:#000000" title="Black"></button>
-                </div>
-                <div id="action-group">
-                    <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>↩️ Undo</button>
-                    <button id="btn-save" title="Save PDF">💾 Save</button>
-                    <span id="annot-count"></span>
+    <div id="app-shell">
+        <header id="topbar">
+            <div class="brand">
+                <div class="brand-dot"></div>
+                <div>
+                    <h1>Hayro PDF Studio</h1>
+                    <p>Production capability preview</p>
                 </div>
             </div>
+            <div class="header-actions">
+                <button id="open-pdf-btn" class="ghost-btn" aria-label="Open PDF">Open PDF</button>
+                <button id="btn-save" class="primary-btn" aria-label="Save annotated PDF">Save</button>
+            </div>
+            <input type="file" id="file-input" accept=".pdf" hidden>
+        </header>
 
-            <div id="controls">
-                <button id="prev-page" title="Previous page">← Previous</button>
-                <span id="page-info">1 / 1</span>
-                <input type="number" id="page-input" min="1" title="Go to page">
-                <button id="next-page" title="Next page">Next →</button>
-            </div>
-            
-            <div id="drop-overlay" style="display: none;">
-                <div class="drop-overlay-content">
-                    <div class="drop-icon">📄</div>
-                    <p>Drop new PDF here</p>
+        <main id="workspace">
+            <aside id="left-panel">
+                <section class="panel-card">
+                    <h2>Tools</h2>
+                    <div id="tool-group">
+                        <button id="tool-select" class="tool-btn active" title="Select (V)">Select</button>
+                        <button id="tool-highlight" class="tool-btn" title="Highlight (H)">Highlight</button>
+                        <button id="tool-rectangle" class="tool-btn" title="Rectangle (R)">Rectangle</button>
+                        <button id="tool-ink" class="tool-btn" title="Pencil (P)">Pencil</button>
+                        <button id="tool-text" class="tool-btn" title="Free Text (T)">Text</button>
+                        <button id="tool-text-field" class="tool-btn" title="Text Field (F)">Text Field</button>
+                        <button id="tool-signature-field" class="tool-btn" title="Signature Field (S)">Signature</button>
+                    </div>
+                </section>
+
+                <section class="panel-card">
+                    <h2>Color</h2>
+                    <div id="color-group">
+                        <button class="color-btn" data-color="1,1,0" style="background:#ffd84d" title="Yellow"></button>
+                        <button class="color-btn active" data-color="1,0.2,0.2" style="background:#ff5b5b" title="Red"></button>
+                        <button class="color-btn" data-color="0.2,0.45,1" style="background:#3377ff" title="Blue"></button>
+                        <button class="color-btn" data-color="0.12,0.68,0.3" style="background:#1fb95f" title="Green"></button>
+                        <button class="color-btn" data-color="0,0,0" style="background:#111111" title="Black"></button>
+                    </div>
+                </section>
+
+                <section class="panel-card">
+                    <h2>History</h2>
+                    <div class="history-actions">
+                        <button id="btn-undo" class="ghost-btn" title="Undo (Ctrl+Z)" disabled>Undo</button>
+                        <button id="btn-redo" class="ghost-btn" title="Redo (Ctrl+Shift+Z)" disabled>Redo</button>
+                    </div>
+                    <div id="annot-count">No pending edits</div>
+                </section>
+            </aside>
+
+            <section id="viewer-column">
+                <div id="toolbar">
+                    <div class="toolbar-group">
+                        <button id="prev-page" class="ghost-btn" title="Previous page">←</button>
+                        <div id="page-info">1 / 1</div>
+                        <input type="number" id="page-input" min="1" title="Go to page">
+                        <button id="next-page" class="ghost-btn" title="Next page">→</button>
+                    </div>
+                    <div class="toolbar-group">
+                        <button id="zoom-out" class="ghost-btn" title="Zoom out">−</button>
+                        <input id="zoom-input" type="number" min="25" max="500" step="5" value="100" aria-label="Zoom percentage">
+                        <span class="zoom-suffix">%</span>
+                        <button id="zoom-in" class="ghost-btn" title="Zoom in">+</button>
+                        <button id="zoom-fit-width" class="ghost-btn">Fit Width</button>
+                        <button id="zoom-fit-page" class="ghost-btn">Fit Page</button>
+                    </div>
                 </div>
-            </div>
-        </div>
-        
-        <div id="log-window">
+
+                <div id="empty-state">
+                    <div class="empty-card" id="drop-zone">
+                        <div class="empty-icon">📄</div>
+                        <h2>Open a PDF to start</h2>
+                        <p>Drop a PDF file here, or click to browse.</p>
+                    </div>
+                </div>
+
+                <div id="viewer" hidden>
+                    <div id="viewer-scroll"></div>
+                    <div id="drop-overlay" hidden>
+                        <div class="drop-overlay-card">Drop PDF to replace current document</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <section id="log-window">
             <div id="log-header">
                 <span>Logs</span>
-                <button id="clear-logs" title="Clear logs">Clear</button>
+                <button id="clear-logs" class="ghost-btn" title="Clear logs">Clear</button>
             </div>
             <div id="log-content"></div>
         </div>

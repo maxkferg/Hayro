@@ -316,6 +316,70 @@ pub fn generate_text_appearance(_annot: &TextAnnot) -> Vec<u8> {
     content.finish().into_vec()
 }
 
+/// Generate appearance for a text form field widget.
+pub fn generate_text_field_appearance(annot: &TextFieldAnnot) -> Vec<u8> {
+    let rect = &annot.base.rect;
+    let width = (rect[2] - rect[0]).max(1.0);
+    let height = (rect[3] - rect[1]).max(1.0);
+    let text = annot.value.as_deref().unwrap_or_default();
+
+    let mut content = Content::new();
+    content
+        .set_fill_rgb(1.0, 1.0, 1.0)
+        .rect(0.0, 0.0, width, height)
+        .fill_nonzero()
+        .set_stroke_rgb(0.2, 0.2, 0.2)
+        .set_line_width(1.0)
+        .rect(0.5, 0.5, width - 1.0, height - 1.0)
+        .stroke();
+
+    if !text.is_empty() {
+        content.begin_text();
+        content.set_font(pdf_writer::Name(b"Helv"), 10.0);
+        content.set_fill_rgb(0.0, 0.0, 0.0);
+        content.next_line(3.0, (height - 12.0).max(2.0));
+        content.show(pdf_writer::Str(text.as_bytes()));
+        content.end_text();
+    }
+
+    content.finish().into_vec()
+}
+
+/// Generate appearance for a signature form field widget.
+pub fn generate_signature_field_appearance(annot: &SignatureFieldAnnot) -> Vec<u8> {
+    let rect = &annot.base.rect;
+    let width = (rect[2] - rect[0]).max(1.0);
+    let height = (rect[3] - rect[1]).max(1.0);
+
+    let mut content = Content::new();
+    content
+        .set_fill_rgb(1.0, 1.0, 1.0)
+        .rect(0.0, 0.0, width, height)
+        .fill_nonzero()
+        .set_stroke_rgb(0.1, 0.2, 0.5)
+        .set_line_width(1.2)
+        .rect(0.6, 0.6, width - 1.2, height - 1.2)
+        .stroke();
+
+    // Signature line.
+    let line_y = (height * 0.35).max(8.0).min(height - 4.0);
+    content
+        .set_stroke_rgb(0.3, 0.3, 0.3)
+        .set_line_width(0.8)
+        .move_to(6.0, line_y)
+        .line_to((width - 6.0).max(6.0), line_y)
+        .stroke();
+
+    content.begin_text();
+    content.set_font(pdf_writer::Name(b"Helv"), 8.0);
+    content.set_fill_rgb(0.2, 0.2, 0.2);
+    content.next_line(6.0, (line_y + 2.0).min(height - 10.0));
+    content.show(pdf_writer::Str(b"Sign here"));
+    content.end_text();
+
+    content.finish().into_vec()
+}
+
 /// Generate the appearance stream for any annotation type.
 pub fn generate_appearance(annot: &Annotation) -> Vec<u8> {
     match annot {
@@ -329,6 +393,8 @@ pub fn generate_appearance(annot: &Annotation) -> Vec<u8> {
         Annotation::Circle(a) => generate_circle_appearance(a),
         Annotation::Line(a) => generate_line_appearance(a),
         Annotation::Text(a) => generate_text_appearance(a),
+        Annotation::TextField(a) => generate_text_field_appearance(a),
+        Annotation::SignatureField(a) => generate_signature_field_appearance(a),
         Annotation::Link(_) => {
             // Links typically don't have visible appearance streams
             Vec::new()
@@ -464,5 +530,44 @@ mod tests {
         let s = String::from_utf8_lossy(&bytes);
         assert!(!s.is_empty(), "should generate something");
         assert!(s.contains("re"), "should draw rectangle: {s}");
+    }
+
+    #[test]
+    fn text_field_appearance_contains_border() {
+        let annot = TextFieldAnnot {
+            base: AnnotationBase {
+                rect: [100.0, 100.0, 260.0, 132.0],
+                ..Default::default()
+            },
+            field_name: "name".to_string(),
+            value: Some("Alice".to_string()),
+            default_value: None,
+            max_len: Some(32),
+            default_appearance: "0 0 0 rg /Helv 10 Tf".to_string(),
+            read_only: false,
+            required: false,
+            multiline: false,
+        };
+        let bytes = generate_text_field_appearance(&annot);
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(s.contains("re"), "should draw rectangle: {s}");
+        assert!(s.contains("Tj"), "should render text: {s}");
+    }
+
+    #[test]
+    fn signature_field_appearance_contains_label() {
+        let annot = SignatureFieldAnnot {
+            base: AnnotationBase {
+                rect: [100.0, 100.0, 300.0, 160.0],
+                ..Default::default()
+            },
+            field_name: "signature".to_string(),
+            tooltip: None,
+            required: false,
+        };
+        let bytes = generate_signature_field_appearance(&annot);
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(s.contains("re"), "should draw border: {s}");
+        assert!(s.contains("Sign here"), "should include helper label: {s}");
     }
 }

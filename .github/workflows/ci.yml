@@ -20,7 +20,11 @@ jobs:
       - run: RUSTFLAGS="-D warnings" cargo clippy --workspace --exclude hayro-demo --tests --examples
       - run: cargo fmt --check --all
       - run: RUSTFLAGS="-D warnings" cargo doc --workspace --exclude hayro-demo --no-deps
-      - run: RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --exclude hayro-demo
+      - run: RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --exclude hayro-demo --exclude hayro-fuzz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node --test hayro-demo/tests-js/viewer_math.test.js
         
   no_std:
     name: Check no_std compatibility
