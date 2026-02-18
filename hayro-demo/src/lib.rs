@@ -557,6 +557,62 @@ impl PdfViewer {
             .map_err(|e| JsValue::from_str(&format!("Save failed: {e}")))
     }
 
+    /// List annotations on a specific page (1-based).
+    ///
+    /// Returns a JS array where each element is a sub-array:
+    /// `[globalIndex, typeString, x0, y0, x1, y1]`.
+    #[wasm_bindgen]
+    pub fn list_page_annotations(&self, page: usize) -> Result<js_sys::Array, JsValue> {
+        let page_idx = self.page_index_from_one_based(page)?;
+        let ops = self.history.page_operations(page_idx);
+        let result = js_sys::Array::new_with_length(ops.len() as u32);
+        for (i, (global_idx, op)) in ops.iter().enumerate() {
+            let rect = op.annotation.base().rect;
+            let item = js_sys::Array::new_with_length(6);
+            item.set(0, JsValue::from(*global_idx as u32));
+            item.set(1, JsValue::from_str(op.annotation.type_name()));
+            item.set(2, JsValue::from_f64(rect[0] as f64));
+            item.set(3, JsValue::from_f64(rect[1] as f64));
+            item.set(4, JsValue::from_f64(rect[2] as f64));
+            item.set(5, JsValue::from_f64(rect[3] as f64));
+            result.set(i as u32, item.into());
+        }
+        Ok(result)
+    }
+
+    /// Update the bounding rect of an annotation by its global operation index.
+    ///
+    /// Coordinates are in PDF space. Internal geometry (quad-points, ink paths,
+    /// line endpoints) is automatically transformed to match the new rect.
+    #[wasm_bindgen]
+    pub fn update_annotation_rect(
+        &mut self,
+        index: usize,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+    ) -> bool {
+        let new_rect = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+        if self.history.update_rect_at(index, new_rect) {
+            self.rebuild_pdf_with_operations();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove a specific annotation by its global operation index.
+    #[wasm_bindgen]
+    pub fn remove_annotation(&mut self, index: usize) -> bool {
+        if self.history.remove_at(index) {
+            self.rebuild_pdf_with_operations();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get the number of pending annotations on the current page.
     #[wasm_bindgen]
     pub fn get_annotation_count(&self) -> usize {
