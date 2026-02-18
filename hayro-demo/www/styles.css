@@ -311,6 +311,11 @@ body {
     cursor: crosshair;
 }
 
+.annotation-layer.select-active {
+    pointer-events: auto;
+    cursor: default;
+}
+
 .page-label {
     position: absolute;
     top: -24px;
