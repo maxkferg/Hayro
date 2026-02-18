@@ -50,6 +50,8 @@ jobs:
           cp www/styles.css dist/
           cp www/index.js dist/
           cp www/viewer_math.js dist/
+          cp www/draw_helpers.js dist/
+          cp www/state_helpers.js dist/
 
           # Copy generated WASM files
           cp www/hayro_demo_bg.wasm dist/
