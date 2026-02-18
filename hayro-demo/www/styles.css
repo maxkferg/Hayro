@@ -224,6 +224,10 @@ body {
     padding: 24px;
 }
 
+#empty-state[hidden] {
+    display: none;
+}
+
 .empty-card {
     width: min(580px, 100%);
     border: 2px dashed #c4cee4;
@@ -321,6 +325,10 @@ body {
     background: rgba(25, 37, 65, 0.6);
     display: grid;
     place-items: center;
+}
+
+#drop-overlay[hidden] {
+    display: none;
 }
 
 .drop-overlay-card {

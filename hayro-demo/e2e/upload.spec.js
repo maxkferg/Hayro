@@ -18,13 +18,13 @@ test.describe('Upload a document', () => {
     test('uploads a PDF via file input and shows viewer', async ({ page }) => {
         await uploadPdf(page, SINGLE_PAGE_PDF);
 
-        // Empty state should have the hidden attribute
+        // Empty state should be hidden
         const emptyState = page.locator('#empty-state');
-        await expect(emptyState).toHaveAttribute('hidden', '');
+        await expect(emptyState).toBeHidden();
 
-        // Viewer should not have the hidden attribute
+        // Viewer should be visible
         const viewer = page.locator('#viewer');
-        await expect(viewer).not.toHaveAttribute('hidden');
+        await expect(viewer).toBeVisible();
 
         // Page info should show page count
         const pageInfo = page.locator('#page-info');
