@@ -1,0 +1,3 @@
+# wasm-pack generates a blanket `*` here on build.
+# Override: only ignore build artifacts not already handled by parent .gitignore.
+README.md
