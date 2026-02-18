@@ -313,46 +313,45 @@ test.describe('Annotation selection, move, resize, and delete', () => {
     });
 
     test('dragging inside a selected annotation moves it', async ({ page }) => {
-        // Capture baseline canvas pixels
-        const pixelsBefore = await page.evaluate(() => {
-            const canvas = document.querySelector('.pdf-canvas');
-            const ctx = canvas.getContext('2d');
-            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-            let sum = 0;
-            for (let i = 0; i < data.length; i++) sum += data[i];
-            return sum;
-        });
+        const annotCount = page.locator('#annot-count');
 
         // Draw a rectangle
-        const { cx, cy } = await drawAndSelectRect(page, 50, 50, 200, 150);
+        const { cx, cy } = await drawAndSelectRect(page, 60, 60, 220, 180);
+        await expect(annotCount).toContainText('Total edits: 1');
 
-        // Wait for render
-        await page.waitForTimeout(500);
+        // Wait for render to settle
+        await page.waitForTimeout(600);
 
-        const pixelsAfterDraw = await page.evaluate(() => {
+        // Capture a region of the canvas BEFORE the move
+        const regionBefore = await page.evaluate(() => {
             const canvas = document.querySelector('.pdf-canvas');
             const ctx = canvas.getContext('2d');
-            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            // Sample a small region near where the annotation should be after move
+            const data = ctx.getImageData(200, 200, 100, 100).data;
             let sum = 0;
             for (let i = 0; i < data.length; i++) sum += data[i];
             return sum;
         });
 
-        // Drag the annotation to a new position
-        await dragOnAnnotationLayer(page, cx, cy, cx + 80, cy + 80);
-        await page.waitForTimeout(800);
+        // Drag the annotation from its center to a new position (large move)
+        await dragOnAnnotationLayer(page, cx, cy, cx + 100, cy + 100);
+        await page.waitForTimeout(1000);
 
-        const pixelsAfterMove = await page.evaluate(() => {
+        // The annotation count should still be 1 (moved, not deleted or duplicated)
+        await expect(annotCount).toContainText('Total edits: 1');
+
+        // Capture the same region AFTER the move
+        const regionAfter = await page.evaluate(() => {
             const canvas = document.querySelector('.pdf-canvas');
             const ctx = canvas.getContext('2d');
-            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            const data = ctx.getImageData(200, 200, 100, 100).data;
             let sum = 0;
             for (let i = 0; i < data.length; i++) sum += data[i];
             return sum;
         });
 
-        // Canvas should be different after the move (annotation in a new position)
-        expect(pixelsAfterMove).not.toBe(pixelsAfterDraw);
+        // The sampled region should have changed (annotation moved into it)
+        expect(regionAfter).not.toBe(regionBefore);
     });
 
     test('move preserves annotation count', async ({ page }) => {

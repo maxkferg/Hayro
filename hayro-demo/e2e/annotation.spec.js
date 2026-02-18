@@ -156,17 +156,20 @@ test.describe('Draw annotations', () => {
     });
 
     test('annotation layer becomes active when a drawing tool is selected', async ({ page }) => {
-        // Select tool → annotation layer should NOT be active
+        // Select tool → annotation layer should have select-active (not drawing-active)
         const annotLayer = page.locator('.annotation-layer').first();
-        await expect(annotLayer).not.toHaveClass(/active/);
+        await expect(annotLayer).toHaveClass(/select-active/);
+        await expect(annotLayer).not.toHaveClass(/\bactive\b/);
 
         // Switch to Rectangle tool
         await page.locator('#tool-rectangle').click();
-        await expect(annotLayer).toHaveClass(/active/);
+        await expect(annotLayer).toHaveClass(/\bactive\b/);
+        await expect(annotLayer).not.toHaveClass(/select-active/);
 
         // Switch back to Select
         await page.locator('#tool-select').click();
-        await expect(annotLayer).not.toHaveClass(/active/);
+        await expect(annotLayer).toHaveClass(/select-active/);
+        await expect(annotLayer).not.toHaveClass(/\bactive\b/);
     });
 
     test('drawing a rectangle annotation updates the edit count', async ({ page }) => {
