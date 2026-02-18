@@ -117,6 +117,44 @@ impl Annotation {
             Self::SignatureField(a) => &a.base,
         }
     }
+
+    /// Get mutable access to the base annotation data.
+    pub fn base_mut(&mut self) -> &mut AnnotationBase {
+        match self {
+            Self::Highlight(a) => &mut a.base,
+            Self::Underline(a) => &mut a.base,
+            Self::StrikeOut(a) => &mut a.base,
+            Self::Squiggly(a) => &mut a.base,
+            Self::FreeText(a) => &mut a.base,
+            Self::Ink(a) => &mut a.base,
+            Self::Square(a) => &mut a.base,
+            Self::Circle(a) => &mut a.base,
+            Self::Line(a) => &mut a.base,
+            Self::Text(a) => &mut a.base,
+            Self::Link(a) => &mut a.base,
+            Self::TextField(a) => &mut a.base,
+            Self::SignatureField(a) => &mut a.base,
+        }
+    }
+
+    /// Return a short type name string for the annotation variant.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Highlight(_) => "highlight",
+            Self::Underline(_) => "underline",
+            Self::StrikeOut(_) => "strikeout",
+            Self::Squiggly(_) => "squiggly",
+            Self::FreeText(_) => "freetext",
+            Self::Ink(_) => "ink",
+            Self::Square(_) => "square",
+            Self::Circle(_) => "circle",
+            Self::Line(_) => "line",
+            Self::Text(_) => "text",
+            Self::Link(_) => "link",
+            Self::TextField(_) => "textfield",
+            Self::SignatureField(_) => "signaturefield",
+        }
+    }
 }
 
 /// A highlight markup annotation.

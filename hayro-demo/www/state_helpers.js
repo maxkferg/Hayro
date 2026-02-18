@@ -104,3 +104,144 @@ export function findActivePageFromScroll(pagePositions, anchorY, fallbackPage) {
 
     return bestPage;
 }
+
+// ---------------------------------------------------------------------------
+// Annotation selection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Hit-test a point against a list of annotation screen rects.
+ *
+ * Returns the *last* (topmost) annotation whose screen rect contains the
+ * point (expanded by `tolerance` pixels), or -1 if nothing was hit.
+ *
+ * @param {Array<{idx: number, screenRect: [number,number,number,number]}>} annotations
+ * @param {number} x — screen X relative to the annotation layer
+ * @param {number} y — screen Y relative to the annotation layer
+ * @param {number} [tolerance=4] — extra pixels added to each side of the rect
+ * @returns {number} the array-position of the hit annotation, or -1
+ */
+export function hitTestAnnotations(annotations, x, y, tolerance = 4) {
+    // Iterate backwards so the topmost (last-drawn) annotation wins.
+    for (let i = annotations.length - 1; i >= 0; i--) {
+        const [rx0, ry0, rx1, ry1] = annotations[i].screenRect;
+        if (
+            x >= rx0 - tolerance &&
+            x <= rx1 + tolerance &&
+            y >= ry0 - tolerance &&
+            y <= ry1 + tolerance
+        ) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Determine which resize handle (if any) a point is over.
+ *
+ * Eight handles are placed at the corners and edge midpoints of the rect.
+ * Each handle is a square of `handleSize` × `handleSize` pixels centred on
+ * the handle position.
+ *
+ * @param {[number,number,number,number]} rect — screen rect [x0, y0, x1, y1]
+ * @param {number} x
+ * @param {number} y
+ * @param {number} [handleSize=8]
+ * @returns {string|null} — one of 'nw','n','ne','e','se','s','sw','w', or null
+ */
+export function hitTestHandle(rect, x, y, handleSize = 8) {
+    const [x0, y0, x1, y1] = rect;
+    const mx = (x0 + x1) / 2;
+    const my = (y0 + y1) / 2;
+    const hs = handleSize / 2;
+
+    const handles = [
+        ['nw', x0, y0],
+        ['n', mx, y0],
+        ['ne', x1, y0],
+        ['e', x1, my],
+        ['se', x1, y1],
+        ['s', mx, y1],
+        ['sw', x0, y1],
+        ['w', x0, my],
+    ];
+
+    for (const [name, hx, hy] of handles) {
+        if (x >= hx - hs && x <= hx + hs && y >= hy - hs && y <= hy + hs) {
+            return name;
+        }
+    }
+    return null;
+}
+
+/**
+ * Compute a new rect after a resize drag from a given handle.
+ *
+ * The handle determines which edges move. A minimum dimension of `minSize`
+ * is enforced on both axes.
+ *
+ * @param {[number,number,number,number]} originalRect — [x0, y0, x1, y1]
+ * @param {string} handle — 'nw','n','ne','e','se','s','sw','w'
+ * @param {number} dx — pointer delta X since drag start
+ * @param {number} dy — pointer delta Y since drag start
+ * @param {number} [minSize=10]
+ * @returns {[number,number,number,number]}
+ */
+export function computeResizedRect(originalRect, handle, dx, dy, minSize = 10) {
+    let [x0, y0, x1, y1] = originalRect;
+
+    if (handle.includes('w')) x0 += dx;
+    if (handle.includes('e')) x1 += dx;
+    if (handle.includes('n')) y0 += dy;
+    if (handle.includes('s')) y1 += dy;
+
+    // Enforce minimum size
+    if (x1 - x0 < minSize) {
+        if (handle.includes('w')) x0 = x1 - minSize;
+        else x1 = x0 + minSize;
+    }
+    if (y1 - y0 < minSize) {
+        if (handle.includes('n')) y0 = y1 - minSize;
+        else y1 = y0 + minSize;
+    }
+
+    return [x0, y0, x1, y1];
+}
+
+/**
+ * Compute a new rect after a move drag.
+ *
+ * @param {[number,number,number,number]} originalRect — [x0, y0, x1, y1]
+ * @param {number} dx
+ * @param {number} dy
+ * @returns {[number,number,number,number]}
+ */
+export function computeMovedRect(originalRect, dx, dy) {
+    return [
+        originalRect[0] + dx,
+        originalRect[1] + dy,
+        originalRect[2] + dx,
+        originalRect[3] + dy,
+    ];
+}
+
+/**
+ * Map a handle name to a CSS cursor value.
+ *
+ * @param {string|null} handle — 'nw','n','ne','e','se','s','sw','w', or null
+ * @returns {string}
+ */
+export function cursorForHandle(handle) {
+    const map = {
+        nw: 'nwse-resize',
+        se: 'nwse-resize',
+        ne: 'nesw-resize',
+        sw: 'nesw-resize',
+        n: 'ns-resize',
+        s: 'ns-resize',
+        e: 'ew-resize',
+        w: 'ew-resize',
+    };
+    return map[handle] || 'default';
+}

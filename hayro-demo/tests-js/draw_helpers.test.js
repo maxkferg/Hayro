@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
     colorToCssRgb,
     colorToCssRgba,
+    drawAnnotationOutlines,
+    drawSelectionOverlay,
     localPointer,
     clearCanvas,
     drawInkPreview,
@@ -168,4 +170,94 @@ test('drawRectPreview normalizes reversed coordinates', () => {
     const strokeCall = ctx._calls.find((c) => c.method === 'strokeRect');
     // Should normalize: min(200,100)=100, min(200,100)=100, abs(100-200)=100, abs(100-200)=100
     assert.deepEqual(strokeCall.args, [100, 100, 100, 100]);
+});
+
+// ---------------------------------------------------------------------------
+// drawSelectionOverlay (mock context)
+// ---------------------------------------------------------------------------
+
+function createFullMockContext(canvasWidth, canvasHeight) {
+    const calls = [];
+    return {
+        canvas: { width: canvasWidth, height: canvasHeight },
+        clearRect(...args) { calls.push({ method: 'clearRect', args }); },
+        fillRect(...args) { calls.push({ method: 'fillRect', args }); },
+        strokeRect(...args) { calls.push({ method: 'strokeRect', args }); },
+        beginPath() { calls.push({ method: 'beginPath' }); },
+        moveTo(...args) { calls.push({ method: 'moveTo', args }); },
+        lineTo(...args) { calls.push({ method: 'lineTo', args }); },
+        stroke() { calls.push({ method: 'stroke' }); },
+        save() { calls.push({ method: 'save' }); },
+        restore() { calls.push({ method: 'restore' }); },
+        setLineDash(v) { calls.push({ method: 'setLineDash', args: [v] }); },
+        set strokeStyle(v) { calls.push({ method: 'set:strokeStyle', value: v }); },
+        set fillStyle(v) { calls.push({ method: 'set:fillStyle', value: v }); },
+        set lineWidth(v) { calls.push({ method: 'set:lineWidth', value: v }); },
+        set lineCap(v) { calls.push({ method: 'set:lineCap', value: v }); },
+        set lineJoin(v) { calls.push({ method: 'set:lineJoin', value: v }); },
+        _calls: calls,
+    };
+}
+
+test('drawSelectionOverlay draws dashed border and 8 handles', () => {
+    const ctx = createFullMockContext(400, 400);
+    drawSelectionOverlay(ctx, 50, 50, 200, 150);
+
+    const methodNames = ctx._calls.map((c) => c.method);
+
+    // Should call save/restore for the dashed border
+    assert.ok(methodNames.includes('save'), 'should save context');
+    assert.ok(methodNames.includes('restore'), 'should restore context');
+
+    // Should call setLineDash for the dashed border
+    assert.ok(methodNames.includes('setLineDash'), 'should set line dash');
+
+    // Should have strokeRect calls (1 for border + 8 for handle outlines)
+    const strokeRectCalls = ctx._calls.filter((c) => c.method === 'strokeRect');
+    assert.ok(strokeRectCalls.length >= 9, `expected >= 9 strokeRect calls, got ${strokeRectCalls.length}`);
+
+    // Should have 8 fillRect calls for handle backgrounds
+    const fillRectCalls = ctx._calls.filter((c) => c.method === 'fillRect');
+    assert.equal(fillRectCalls.length, 8, 'should draw 8 handle fills');
+});
+
+test('drawSelectionOverlay uses blue colors', () => {
+    const ctx = createFullMockContext(400, 400);
+    drawSelectionOverlay(ctx, 10, 10, 100, 100);
+
+    const styleValues = ctx._calls
+        .filter((c) => c.method === 'set:strokeStyle')
+        .map((c) => c.value);
+    assert.ok(styleValues.some((v) => v.includes('3f5cff')), 'should use blue stroke color');
+});
+
+// ---------------------------------------------------------------------------
+// drawAnnotationOutlines (mock context)
+// ---------------------------------------------------------------------------
+
+test('drawAnnotationOutlines does nothing with empty rects', () => {
+    const ctx = createFullMockContext(400, 400);
+    drawAnnotationOutlines(ctx, []);
+    assert.equal(ctx._calls.length, 0);
+});
+
+test('drawAnnotationOutlines draws one strokeRect per annotation', () => {
+    const ctx = createFullMockContext(400, 400);
+    drawAnnotationOutlines(ctx, [
+        [10, 10, 100, 50],
+        [20, 60, 200, 120],
+        [30, 130, 150, 200],
+    ]);
+
+    const strokeRectCalls = ctx._calls.filter((c) => c.method === 'strokeRect');
+    assert.equal(strokeRectCalls.length, 3, 'should draw 3 outline rects');
+});
+
+test('drawAnnotationOutlines uses dashed line style', () => {
+    const ctx = createFullMockContext(400, 400);
+    drawAnnotationOutlines(ctx, [[10, 10, 100, 100]]);
+
+    const dashCalls = ctx._calls.filter((c) => c.method === 'setLineDash');
+    assert.ok(dashCalls.length > 0, 'should call setLineDash');
+    assert.ok(dashCalls[0].args[0].length > 0, 'dash pattern should not be empty');
 });

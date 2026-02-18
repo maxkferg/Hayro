@@ -90,3 +90,77 @@ export function drawRectPreview(ctx, tool, x0, y0, x1, y1, color) {
         ctx.strokeRect(rx, ry, rw, rh);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Selection overlay drawing
+// ---------------------------------------------------------------------------
+
+/**
+ * Draw a selection overlay around a rect: dashed blue border + 8 resize handles.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} x0 — left
+ * @param {number} y0 — top
+ * @param {number} x1 — right
+ * @param {number} y1 — bottom
+ * @param {number} [handleSize=8] — side length of handle squares
+ */
+export function drawSelectionOverlay(ctx, x0, y0, x1, y1, handleSize = 8) {
+    const rx = Math.min(x0, x1);
+    const ry = Math.min(y0, y1);
+    const rw = Math.abs(x1 - x0);
+    const rh = Math.abs(y1 - y0);
+    const mx = rx + rw / 2;
+    const my = ry + rh / 2;
+    const hs = handleSize / 2;
+
+    // Dashed selection border
+    ctx.save();
+    ctx.strokeStyle = '#3f5cff';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.restore();
+
+    // Resize handles — filled white squares with blue border
+    const handles = [
+        [rx, ry],           // nw
+        [mx, ry],           // n
+        [rx + rw, ry],      // ne
+        [rx + rw, my],      // e
+        [rx + rw, ry + rh], // se
+        [mx, ry + rh],      // s
+        [rx, ry + rh],      // sw
+        [rx, my],           // w
+    ];
+
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#3f5cff';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    for (const [hx, hy] of handles) {
+        ctx.fillRect(hx - hs, hy - hs, handleSize, handleSize);
+        ctx.strokeRect(hx - hs, hy - hs, handleSize, handleSize);
+    }
+}
+
+/**
+ * Draw subtle outlines for all annotation rects (shown while the select tool
+ * is active so the user can see clickable regions).
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array<[number,number,number,number]>} rects — screen rects [x0,y0,x1,y1]
+ */
+export function drawAnnotationOutlines(ctx, rects) {
+    if (rects.length === 0) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(63, 92, 255, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 2]);
+    for (const [x0, y0, x1, y1] of rects) {
+        const rx = Math.min(x0, x1);
+        const ry = Math.min(y0, y1);
+        ctx.strokeRect(rx, ry, Math.abs(x1 - x0), Math.abs(y1 - y0));
+    }
+    ctx.restore();
+}
