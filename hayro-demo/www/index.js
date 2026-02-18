@@ -1,7 +1,21 @@
 import init, { PdfViewer } from './hayro_demo.js';
 import { ZOOM_MAX, ZOOM_MIN, clampZoom, pdfToScreen, screenToPdf } from './viewer_math.js';
-
-const ZOOM_STEP = 0.1;
+import {
+    clearCanvas as clearCanvasHelper,
+    colorToCssRgb,
+    colorToCssRgba,
+    drawInkPreview as drawInkPreviewHelper,
+    drawRectPreview as drawRectPreviewHelper,
+    localPointer as localPointerHelper,
+} from './draw_helpers.js';
+import {
+    ZOOM_STEP,
+    computePageLayout,
+    computeFitZoom,
+    computeToolbarState,
+    computeHistoryState,
+    findActivePageFromScroll,
+} from './state_helpers.js';
 
 const state = {
     pdfViewer: null,
@@ -428,41 +442,19 @@ function finishDraw(layer, page) {
 }
 
 function drawInkPreview(ctx, points) {
-    if (points.length < 2) return;
-    clearCanvas(ctx);
-    const [r, g, b] = state.color;
-    ctx.strokeStyle = `rgb(${r * 255}, ${g * 255}, ${b * 255})`;
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(points[0][0], points[0][1]);
-    for (let i = 1; i < points.length; i += 1) {
-        ctx.lineTo(points[i][0], points[i][1]);
-    }
-    ctx.stroke();
+    drawInkPreviewHelper(ctx, points, state.color);
 }
 
 function drawRectPreview(ctx, x0, y0, x1, y1) {
-    clearCanvas(ctx);
-    const [r, g, b] = state.color;
-    if (state.tool === 'highlight') {
-        ctx.fillStyle = `rgba(${r * 255}, ${g * 255}, ${b * 255}, 0.3)`;
-        ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
-    } else {
-        ctx.strokeStyle = `rgb(${r * 255}, ${g * 255}, ${b * 255})`;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
-    }
+    drawRectPreviewHelper(ctx, state.tool, x0, y0, x1, y1, state.color);
 }
 
 function clearCanvas(ctx) {
-    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    clearCanvasHelper(ctx);
 }
 
 function localPointer(layer, event) {
-    const rect = layer.getBoundingClientRect();
-    return [event.clientX - rect.left, event.clientY - rect.top];
+    return localPointerHelper(layer.getBoundingClientRect(), event.clientX, event.clientY);
 }
 
 function setTool(tool) {
@@ -492,40 +484,31 @@ function setZoom(zoom) {
 function fitZoom(mode) {
     if (!state.pdfViewer || state.pageInfos.length === 0) return;
     const pageInfo = state.pageInfos[state.activePage - 1] ?? state.pageInfos[0];
-    const viewportWidth = Math.max(300, ui.viewerScroll.clientWidth - 40);
-    const viewportHeight = Math.max(300, ui.viewerScroll.clientHeight - 50);
-
-    const pageWidth = pageInfo[0];
-    const pageHeight = pageInfo[1];
-
-    if (mode === 'page') {
-        setZoom(Math.min(viewportWidth / pageWidth, viewportHeight / pageHeight));
-    } else {
-        setZoom(viewportWidth / pageWidth);
-    }
+    const viewportWidth = ui.viewerScroll.clientWidth - 40;
+    const viewportHeight = ui.viewerScroll.clientHeight - 50;
+    setZoom(computeFitZoom(mode, pageInfo, viewportWidth, viewportHeight));
 }
 
 function layoutPages() {
     const dpr = window.devicePixelRatio || 1;
     for (let page = 1; page <= state.pageInfos.length; page += 1) {
         const info = state.pageInfos[page - 1];
-        const width = Math.max(1, Math.floor(info[0] * state.zoom));
-        const height = Math.max(1, Math.floor(info[1] * state.zoom));
+        const layout = computePageLayout(info, state.zoom, dpr);
         const node = state.pageNodes.get(page);
         if (!node) continue;
 
-        node.shell.style.width = `${width}px`;
-        node.shell.style.height = `${height}px`;
-        node.paper.style.width = `${width}px`;
-        node.paper.style.height = `${height}px`;
-        node.canvas.style.width = `${width}px`;
-        node.canvas.style.height = `${height}px`;
-        node.canvas.width = Math.round(width * dpr);
-        node.canvas.height = Math.round(height * dpr);
-        node.annotationLayer.style.width = `${width}px`;
-        node.annotationLayer.style.height = `${height}px`;
-        node.annotationLayer.width = width;
-        node.annotationLayer.height = height;
+        node.shell.style.width = `${layout.cssWidth}px`;
+        node.shell.style.height = `${layout.cssHeight}px`;
+        node.paper.style.width = `${layout.cssWidth}px`;
+        node.paper.style.height = `${layout.cssHeight}px`;
+        node.canvas.style.width = `${layout.cssWidth}px`;
+        node.canvas.style.height = `${layout.cssHeight}px`;
+        node.canvas.width = layout.canvasWidth;
+        node.canvas.height = layout.canvasHeight;
+        node.annotationLayer.style.width = `${layout.cssWidth}px`;
+        node.annotationLayer.style.height = `${layout.cssHeight}px`;
+        node.annotationLayer.width = layout.cssWidth;
+        node.annotationLayer.height = layout.cssHeight;
     }
 }
 
@@ -746,19 +729,15 @@ function scrollToPage(page) {
 
 function updateActivePageFromScroll() {
     if (!state.pdfViewer) return;
-    let bestPage = state.activePage;
-    let bestDistance = Number.POSITIVE_INFINITY;
     const containerRect = ui.viewerScroll.getBoundingClientRect();
     const anchorY = containerRect.top + 80;
 
+    const pagePositions = [];
     for (const [page, node] of state.pageNodes.entries()) {
-        const rect = node.shell.getBoundingClientRect();
-        const distance = Math.abs(rect.top - anchorY);
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            bestPage = page;
-        }
+        pagePositions.push({ page, top: node.shell.getBoundingClientRect().top });
     }
+
+    const bestPage = findActivePageFromScroll(pagePositions, anchorY, state.activePage);
 
     if (bestPage !== state.activePage) {
         state.activePage = bestPage;
@@ -770,12 +749,13 @@ function updateActivePageFromScroll() {
 function updateToolbarState() {
     if (!state.pdfViewer) return;
     const total = state.pageInfos.length;
-    ui.pageInfo.textContent = `${state.activePage} / ${total}`;
+    const tbState = computeToolbarState(state.activePage, total, state.zoom);
+    ui.pageInfo.textContent = tbState.pageText;
     ui.pageInput.value = state.activePage;
     ui.pageInput.max = total;
-    ui.prevPage.disabled = state.activePage <= 1;
-    ui.nextPage.disabled = state.activePage >= total;
-    ui.zoomInput.value = Math.round(state.zoom * 100);
+    ui.prevPage.disabled = tbState.prevDisabled;
+    ui.nextPage.disabled = tbState.nextDisabled;
+    ui.zoomInput.value = tbState.zoomPercent;
 }
 
 function updateHistoryState() {
@@ -789,9 +769,10 @@ function updateHistoryState() {
     const currentPageCount = state.pdfViewer.get_annotation_count();
     const totalCount = state.pdfViewer.get_operation_count();
     const redoCount = state.pdfViewer.get_redo_count();
-    ui.undoButton.disabled = totalCount === 0;
-    ui.redoButton.disabled = redoCount === 0;
-    ui.annotCount.textContent = `Page edits: ${currentPageCount} · Total edits: ${totalCount}`;
+    const histState = computeHistoryState(currentPageCount, totalCount, redoCount);
+    ui.undoButton.disabled = histState.undoDisabled;
+    ui.redoButton.disabled = histState.redoDisabled;
+    ui.annotCount.textContent = histState.annotCountText;
 }
 
 function saveDocument() {
