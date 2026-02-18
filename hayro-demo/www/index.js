@@ -4,8 +4,10 @@ import {
     clearCanvas as clearCanvasHelper,
     colorToCssRgb,
     colorToCssRgba,
+    drawAnnotationOutlines as drawAnnotationOutlinesHelper,
     drawInkPreview as drawInkPreviewHelper,
     drawRectPreview as drawRectPreviewHelper,
+    drawSelectionOverlay as drawSelectionOverlayHelper,
     localPointer as localPointerHelper,
 } from './draw_helpers.js';
 import {
@@ -14,7 +16,12 @@ import {
     computeFitZoom,
     computeToolbarState,
     computeHistoryState,
+    computeMovedRect,
+    computeResizedRect,
+    cursorForHandle,
     findActivePageFromScroll,
+    hitTestAnnotations,
+    hitTestHandle,
 } from './state_helpers.js';
 
 const state = {
@@ -31,6 +38,13 @@ const state = {
     color: [1, 0.2, 0.2],
     drawSession: null,
     observer: null,
+    // --- Selection state ---
+    /** @type {null | { page: number, globalIdx: number, screenRect: number[], pdfRect: number[] }} */
+    selectedAnnotation: null,
+    /** @type {null | { mode: 'move'|'resize', handle: string|null, startX: number, startY: number, originalScreenRect: number[] }} */
+    selectSession: null,
+    /** @type {Array<{ globalIdx: number, type: string, pdfRect: number[], screenRect: number[] }>} */
+    pageAnnotations: [],
 };
 
 let ui = null;
@@ -208,6 +222,21 @@ function bindToolbar() {
             return;
         }
 
+        // Escape → deselect annotation
+        if (event.key === 'Escape') {
+            deselectAnnotation();
+            return;
+        }
+
+        // Delete / Backspace → delete selected annotation
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+            if (state.selectedAnnotation) {
+                event.preventDefault();
+                deleteSelectedAnnotation();
+            }
+            return;
+        }
+
         switch (event.key.toLowerCase()) {
             case 'v':
                 setTool('select');
@@ -373,9 +402,17 @@ function initializePageShells() {
 
 function bindAnnotationLayer(layer, page) {
     layer.addEventListener('pointerdown', (event) => {
-        if (!state.pdfViewer || state.tool === 'select') return;
+        if (!state.pdfViewer) return;
 
         const [x, y] = localPointer(layer, event);
+
+        // --- Select tool: hit-test annotations ---
+        if (state.tool === 'select') {
+            handleSelectPointerDown(layer, page, x, y, event);
+            return;
+        }
+
+        // --- Drawing tools ---
         state.drawSession = {
             page,
             startX: x,
@@ -395,8 +432,16 @@ function bindAnnotationLayer(layer, page) {
     });
 
     layer.addEventListener('pointermove', (event) => {
-        if (!state.drawSession || state.drawSession.page !== page) return;
         const [x, y] = localPointer(layer, event);
+
+        // --- Select tool: handle hover cursors and drag previews ---
+        if (state.tool === 'select') {
+            handleSelectPointerMove(layer, page, x, y);
+            return;
+        }
+
+        // --- Drawing tools ---
+        if (!state.drawSession || state.drawSession.page !== page) return;
         const ctx = layer.getContext('2d');
         if (!ctx) return;
 
@@ -413,9 +458,30 @@ function bindAnnotationLayer(layer, page) {
         }
     });
 
-    layer.addEventListener('pointerup', () => finishDraw(layer, page));
-    layer.addEventListener('pointercancel', () => finishDraw(layer, page));
-    layer.addEventListener('pointerleave', () => finishDraw(layer, page));
+    layer.addEventListener('pointerup', (event) => {
+        if (state.tool === 'select') {
+            const [x, y] = localPointer(layer, event);
+            handleSelectPointerUp(layer, page, x, y);
+            return;
+        }
+        finishDraw(layer, page);
+    });
+
+    layer.addEventListener('pointercancel', () => {
+        if (state.tool === 'select') {
+            cancelSelectSession(page);
+            return;
+        }
+        finishDraw(layer, page);
+    });
+
+    layer.addEventListener('pointerleave', () => {
+        if (state.tool === 'select') {
+            // Don't cancel drag on pointer leave — the capture keeps it alive
+            return;
+        }
+        finishDraw(layer, page);
+    });
 }
 
 function finishDraw(layer, page) {
@@ -450,6 +516,269 @@ function finishDraw(layer, page) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Selection interaction handlers
+// ---------------------------------------------------------------------------
+
+function handleSelectPointerDown(layer, page, x, y, event) {
+    // If an annotation is already selected, check for handle hit first
+    if (state.selectedAnnotation && state.selectedAnnotation.page === page) {
+        const handle = hitTestHandle(state.selectedAnnotation.screenRect, x, y);
+        if (handle) {
+            // Start resize
+            state.selectSession = {
+                mode: 'resize',
+                handle,
+                startX: x,
+                startY: y,
+                originalScreenRect: [...state.selectedAnnotation.screenRect],
+            };
+            layer.setPointerCapture(event.pointerId);
+            return;
+        }
+
+        // Check if click is inside the selected annotation (start move)
+        const hitIdx = hitTestAnnotations(
+            [{ idx: 0, screenRect: state.selectedAnnotation.screenRect }],
+            x, y, 0
+        );
+        if (hitIdx >= 0) {
+            state.selectSession = {
+                mode: 'move',
+                handle: null,
+                startX: x,
+                startY: y,
+                originalScreenRect: [...state.selectedAnnotation.screenRect],
+            };
+            layer.setPointerCapture(event.pointerId);
+            return;
+        }
+    }
+
+    // Hit-test against all annotations on this page
+    queryPageAnnotations(page);
+    const hitIdx = hitTestAnnotations(state.pageAnnotations, x, y);
+    if (hitIdx >= 0) {
+        const ann = state.pageAnnotations[hitIdx];
+        state.selectedAnnotation = {
+            page,
+            globalIdx: ann.globalIdx,
+            screenRect: [...ann.screenRect],
+            pdfRect: [...ann.pdfRect],
+        };
+        drawSelectionState(page);
+        layer.setPointerCapture(event.pointerId);
+    } else {
+        // Click on empty area — deselect
+        deselectAnnotation();
+    }
+}
+
+function handleSelectPointerMove(layer, page, x, y) {
+    const ctx = layer.getContext('2d');
+    if (!ctx) return;
+
+    // Active drag session — draw preview
+    if (state.selectSession && state.selectedAnnotation && state.selectedAnnotation.page === page) {
+        const dx = x - state.selectSession.startX;
+        const dy = y - state.selectSession.startY;
+        let previewRect;
+        if (state.selectSession.mode === 'move') {
+            previewRect = computeMovedRect(state.selectSession.originalScreenRect, dx, dy);
+        } else {
+            previewRect = computeResizedRect(
+                state.selectSession.originalScreenRect,
+                state.selectSession.handle,
+                dx,
+                dy
+            );
+        }
+        // Redraw with preview rect
+        clearCanvasHelper(ctx);
+        drawAnnotationOutlinesHelper(
+            ctx,
+            state.pageAnnotations.map((a) => a.screenRect)
+        );
+        drawSelectionOverlayHelper(ctx, previewRect[0], previewRect[1], previewRect[2], previewRect[3]);
+        return;
+    }
+
+    // No active drag — update hover cursor
+    if (state.selectedAnnotation && state.selectedAnnotation.page === page) {
+        const handle = hitTestHandle(state.selectedAnnotation.screenRect, x, y);
+        if (handle) {
+            layer.style.cursor = cursorForHandle(handle);
+            return;
+        }
+        // Inside the selected annotation → move cursor
+        const inside = hitTestAnnotations(
+            [{ idx: 0, screenRect: state.selectedAnnotation.screenRect }],
+            x, y, 0
+        );
+        if (inside >= 0) {
+            layer.style.cursor = 'move';
+            return;
+        }
+    }
+
+    // Over any annotation → pointer cursor
+    if (state.pageAnnotations.length > 0) {
+        const overIdx = hitTestAnnotations(state.pageAnnotations, x, y);
+        layer.style.cursor = overIdx >= 0 ? 'pointer' : 'default';
+    } else {
+        layer.style.cursor = 'default';
+    }
+}
+
+function handleSelectPointerUp(layer, page, x, y) {
+    if (!state.selectSession || !state.selectedAnnotation) return;
+    const dx = x - state.selectSession.startX;
+    const dy = y - state.selectSession.startY;
+
+    // If drag distance is negligible, just cancel
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) {
+        state.selectSession = null;
+        drawSelectionState(page);
+        return;
+    }
+
+    let newScreenRect;
+    if (state.selectSession.mode === 'move') {
+        newScreenRect = computeMovedRect(state.selectSession.originalScreenRect, dx, dy);
+    } else {
+        newScreenRect = computeResizedRect(
+            state.selectSession.originalScreenRect,
+            state.selectSession.handle,
+            dx,
+            dy
+        );
+    }
+
+    // Convert screen rect to PDF rect
+    const pageInfo = state.pageInfos[page - 1];
+    const [px0, py0] = screenToPdf(pageInfo, state.zoom, newScreenRect[0], newScreenRect[1]);
+    const [px1, py1] = screenToPdf(pageInfo, state.zoom, newScreenRect[2], newScreenRect[3]);
+    const newPdfRect = [
+        Math.min(px0, px1),
+        Math.min(py0, py1),
+        Math.max(px0, px1),
+        Math.max(py0, py1),
+    ];
+
+    // Commit the update via WASM
+    if (!ensureCurrentPage(page)) {
+        state.selectSession = null;
+        return;
+    }
+
+    state.pdfViewer.update_annotation_rect(
+        state.selectedAnnotation.globalIdx,
+        newPdfRect[0],
+        newPdfRect[1],
+        newPdfRect[2],
+        newPdfRect[3]
+    );
+
+    // Update selection to reflect new position
+    state.selectedAnnotation.screenRect = newScreenRect;
+    state.selectedAnnotation.pdfRect = newPdfRect;
+    state.selectSession = null;
+
+    refreshAfterMutation();
+}
+
+function cancelSelectSession(page) {
+    if (state.selectSession) {
+        state.selectSession = null;
+        drawSelectionState(page);
+    }
+}
+
+/**
+ * Query the WASM backend for annotations on a given page and cache them
+ * with both PDF and screen rects.
+ */
+function queryPageAnnotations(page) {
+    if (!state.pdfViewer) {
+        state.pageAnnotations = [];
+        return;
+    }
+    try {
+        const raw = state.pdfViewer.list_page_annotations(page);
+        const pageInfo = state.pageInfos[page - 1];
+        const results = [];
+        for (let i = 0; i < raw.length; i++) {
+            const entry = raw[i];
+            const globalIdx = entry[0];
+            const type = entry[1];
+            const pdfRect = [entry[2], entry[3], entry[4], entry[5]];
+            const screenRect = pdfRectToScreen(pageInfo, pdfRect[0], pdfRect[1], pdfRect[2], pdfRect[3]);
+            results.push({ globalIdx, type, pdfRect, screenRect });
+        }
+        state.pageAnnotations = results;
+    } catch {
+        state.pageAnnotations = [];
+    }
+}
+
+/**
+ * Redraw the annotation overlay for a page, showing annotation outlines
+ * and the selection overlay if applicable.
+ */
+function drawSelectionState(page) {
+    const node = state.pageNodes.get(page);
+    if (!node) return;
+    const ctx = node.annotationLayer.getContext('2d');
+    if (!ctx) return;
+    clearCanvasHelper(ctx);
+
+    if (state.tool !== 'select') return;
+
+    // Draw subtle outlines for all annotations
+    queryPageAnnotations(page);
+    drawAnnotationOutlinesHelper(
+        ctx,
+        state.pageAnnotations.map((a) => a.screenRect)
+    );
+
+    // Draw selection overlay for the selected annotation
+    if (
+        state.selectedAnnotation &&
+        state.selectedAnnotation.page === page
+    ) {
+        const r = state.selectedAnnotation.screenRect;
+        drawSelectionOverlayHelper(ctx, r[0], r[1], r[2], r[3]);
+    }
+}
+
+/**
+ * Redraw selection state for all visible pages.
+ */
+function drawSelectionStateAll() {
+    for (const page of state.visiblePages) {
+        drawSelectionState(page);
+    }
+}
+
+function deselectAnnotation() {
+    if (!state.selectedAnnotation) return;
+    const page = state.selectedAnnotation.page;
+    state.selectedAnnotation = null;
+    state.selectSession = null;
+    drawSelectionState(page);
+}
+
+function deleteSelectedAnnotation() {
+    if (!state.selectedAnnotation || !state.pdfViewer) return;
+    const { page, globalIdx } = state.selectedAnnotation;
+    if (!ensureCurrentPage(page)) return;
+
+    state.pdfViewer.remove_annotation(globalIdx);
+    state.selectedAnnotation = null;
+    state.selectSession = null;
+    refreshAfterMutation();
+}
+
 function drawInkPreview(ctx, points) {
     drawInkPreviewHelper(ctx, points, state.color);
 }
@@ -467,14 +796,34 @@ function localPointer(layer, event) {
 }
 
 function setTool(tool) {
+    const previousTool = state.tool;
     state.tool = tool;
     Object.entries(ui.toolButtons).forEach(([name, button]) => {
         button.classList.toggle('active', name === tool);
     });
 
-    for (const pageNode of state.pageNodes.values()) {
-        pageNode.annotationLayer.classList.toggle('active', tool !== 'select');
-        pageNode.textLayer.style.pointerEvents = tool === 'select' ? 'auto' : 'none';
+    for (const [page, pageNode] of state.pageNodes.entries()) {
+        if (tool === 'select') {
+            // Select tool: annotation layer is interactive, text layer passthrough
+            pageNode.annotationLayer.classList.remove('active');
+            pageNode.annotationLayer.classList.add('select-active');
+            pageNode.textLayer.style.pointerEvents = 'none';
+        } else {
+            // Drawing tools: annotation layer is active (crosshair), text layer off
+            pageNode.annotationLayer.classList.remove('select-active');
+            pageNode.annotationLayer.classList.toggle('active', true);
+            pageNode.textLayer.style.pointerEvents = 'none';
+        }
+    }
+
+    // Switching away from select → deselect
+    if (previousTool === 'select' && tool !== 'select') {
+        deselectAnnotation();
+    }
+
+    // Switching to select → show annotation outlines
+    if (tool === 'select' && state.pdfViewer) {
+        drawSelectionStateAll();
     }
 }
 
@@ -485,6 +834,12 @@ function setZoom(zoom) {
     state.zoom = clamped;
     state.renderCache.clear();
     state.renderEpoch += 1;
+    // Re-compute selection screen rect at new zoom
+    if (state.selectedAnnotation) {
+        const pageInfo = state.pageInfos[state.selectedAnnotation.page - 1];
+        const pr = state.selectedAnnotation.pdfRect;
+        state.selectedAnnotation.screenRect = pdfRectToScreen(pageInfo, pr[0], pr[1], pr[2], pr[3]);
+    }
     layoutPages();
     updateToolbarState();
     requestRenderVisible();
@@ -551,7 +906,8 @@ function renderPage(page) {
         if (node.textZoom !== state.zoom) {
             renderTextLayer(page, node);
         }
-        node.annotationLayer.classList.toggle('active', state.tool !== 'select');
+        updateAnnotationLayerMode(node);
+        if (state.tool === 'select') drawSelectionState(page);
         return;
     }
 
@@ -564,9 +920,20 @@ function renderPage(page) {
         state.renderCache.set(cacheKey, imageData);
         drawCachedBitmap(node.canvas, imageData, dpr);
         renderTextLayer(page, node);
-        node.annotationLayer.classList.toggle('active', state.tool !== 'select');
+        updateAnnotationLayerMode(node);
+        if (state.tool === 'select') drawSelectionState(page);
     } catch (error) {
         console.error(`Failed to render page ${page}:`, error);
+    }
+}
+
+function updateAnnotationLayerMode(node) {
+    if (state.tool === 'select') {
+        node.annotationLayer.classList.remove('active');
+        node.annotationLayer.classList.add('select-active');
+    } else {
+        node.annotationLayer.classList.remove('select-active');
+        node.annotationLayer.classList.toggle('active', true);
     }
 }
 
@@ -709,6 +1076,11 @@ function refreshAfterMutation() {
     state.renderEpoch += 1;
     requestRenderVisible();
     updateHistoryState();
+    // After any mutation, re-query annotation positions and redraw selection overlays
+    if (state.tool === 'select') {
+        // Use a short delay so the render pass completes first
+        requestAnimationFrame(() => drawSelectionStateAll());
+    }
 }
 
 function undo() {
