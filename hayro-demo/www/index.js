@@ -404,6 +404,11 @@ function bindAnnotationLayer(layer, page) {
             state.drawSession.points.push([x, y]);
             drawInkPreview(ctx, state.drawSession.points);
         } else {
+            if (state.drawSession.points.length < 2) {
+                state.drawSession.points.push([x, y]);
+            } else {
+                state.drawSession.points[state.drawSession.points.length - 1] = [x, y];
+            }
             drawRectPreview(ctx, state.drawSession.startX, state.drawSession.startY, x, y);
         }
     });
@@ -428,8 +433,12 @@ function finishDraw(layer, page) {
         return;
     }
 
-    if (session.points.length === 0) return;
+    if (session.points.length < 2) return;
     const [endX, endY] = session.points[session.points.length - 1];
+    const MIN_DRAG = 4;
+    if (Math.abs(endX - session.startX) < MIN_DRAG && Math.abs(endY - session.startY) < MIN_DRAG) {
+        return;
+    }
     if (state.tool === 'highlight') {
         addHighlightAnnotation(page, session.startX, session.startY, endX, endY);
     } else if (state.tool === 'rectangle') {

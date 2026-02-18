@@ -290,4 +290,204 @@ test.describe('Draw annotations', () => {
         await expect(blueBtn).toHaveClass(/active/);
         await expect(redBtn).not.toHaveClass(/active/);
     });
+
+    test('rectangle drawing does not produce NaN path warnings', async ({ page }) => {
+        const consoleMessages = [];
+        page.on('console', (msg) => {
+            consoleMessages.push(msg.text());
+        });
+
+        await page.locator('#tool-rectangle').click();
+        await drawOnAnnotationLayer(page, 50, 50, 200, 150);
+
+        // Wait for render to complete
+        await page.waitForTimeout(500);
+
+        const nanWarnings = consoleMessages.filter((m) => m.includes('NaN'));
+        expect(nanWarnings).toHaveLength(0);
+    });
+
+    test('drawing multiple rectangles in sequence increments edit count', async ({ page }) => {
+        const annotCount = page.locator('#annot-count');
+        await page.locator('#tool-rectangle').click();
+
+        await drawOnAnnotationLayer(page, 50, 50, 200, 100);
+        await expect(annotCount).toContainText('Total edits: 1');
+
+        await drawOnAnnotationLayer(page, 50, 120, 200, 170);
+        await expect(annotCount).toContainText('Total edits: 2');
+
+        await drawOnAnnotationLayer(page, 50, 190, 200, 240);
+        await expect(annotCount).toContainText('Total edits: 3');
+    });
+
+    test('clicking without dragging does not create an annotation', async ({ page }) => {
+        const annotCount = page.locator('#annot-count');
+        await expect(annotCount).toHaveText('No pending edits');
+
+        await page.locator('#tool-rectangle').click();
+
+        // Dispatch a pointerdown then immediate pointerup at the same point (no move)
+        await page.evaluate(() => {
+            return new Promise((resolve) => {
+                const layer = document.querySelector('.annotation-layer');
+                if (!layer) { resolve(); return; }
+                const rect = layer.getBoundingClientRect();
+                layer.dispatchEvent(
+                    new PointerEvent('pointerdown', {
+                        clientX: rect.left + 100, clientY: rect.top + 100,
+                        bubbles: true, pointerId: 1,
+                    })
+                );
+                layer.dispatchEvent(
+                    new PointerEvent('pointerup', {
+                        clientX: rect.left + 100, clientY: rect.top + 100,
+                        bubbles: true, pointerId: 1,
+                    })
+                );
+                setTimeout(resolve, 300);
+            });
+        });
+
+        // No annotation should have been created
+        await expect(annotCount).toHaveText('No pending edits');
+    });
+
+    test('highlight drawing does not produce NaN path warnings', async ({ page }) => {
+        const consoleMessages = [];
+        page.on('console', (msg) => {
+            consoleMessages.push(msg.text());
+        });
+
+        await page.locator('#tool-highlight').click();
+        await drawOnAnnotationLayer(page, 40, 40, 250, 70);
+
+        await page.waitForTimeout(500);
+
+        const nanWarnings = consoleMessages.filter((m) => m.includes('NaN'));
+        expect(nanWarnings).toHaveLength(0);
+    });
+
+    test('ink drawing does not produce NaN path warnings', async ({ page }) => {
+        const consoleMessages = [];
+        page.on('console', (msg) => {
+            consoleMessages.push(msg.text());
+        });
+
+        await page.locator('#tool-ink').click();
+        await drawInkOnAnnotationLayer(page, [
+            [60, 60],
+            [90, 80],
+            [120, 70],
+            [150, 100],
+        ]);
+
+        await page.waitForTimeout(500);
+
+        const nanWarnings = consoleMessages.filter((m) => m.includes('NaN'));
+        expect(nanWarnings).toHaveLength(0);
+    });
+
+    test('drawing multiple different annotation types in sequence', async ({ page }) => {
+        const annotCount = page.locator('#annot-count');
+
+        // Draw a rectangle
+        await page.locator('#tool-rectangle').click();
+        await drawOnAnnotationLayer(page, 50, 50, 200, 100);
+        await expect(annotCount).toContainText('Total edits: 1');
+
+        // Draw an ink stroke
+        await page.locator('#tool-ink').click();
+        await drawInkOnAnnotationLayer(page, [
+            [60, 120],
+            [100, 140],
+            [140, 130],
+        ]);
+        await expect(annotCount).toContainText('Total edits: 2');
+
+        // Draw a highlight
+        await page.locator('#tool-highlight').click();
+        await drawOnAnnotationLayer(page, 40, 160, 250, 180);
+        await expect(annotCount).toContainText('Total edits: 3');
+    });
+
+    test('rectangle annotation renders on the PDF canvas after drawing', async ({ page }) => {
+        // Capture the canvas pixel data before drawing
+        const pixelsBefore = await page.evaluate(() => {
+            const canvas = document.querySelector('.pdf-canvas');
+            if (!canvas) return null;
+            const ctx = canvas.getContext('2d');
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += data[i];
+            return sum;
+        });
+
+        // Draw a rectangle
+        await page.locator('#tool-rectangle').click();
+        await drawOnAnnotationLayer(page, 50, 50, 200, 150);
+
+        // Wait for the re-render
+        await page.waitForTimeout(800);
+
+        // Capture the canvas pixel data after drawing
+        const pixelsAfter = await page.evaluate(() => {
+            const canvas = document.querySelector('.pdf-canvas');
+            if (!canvas) return null;
+            const ctx = canvas.getContext('2d');
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += data[i];
+            return sum;
+        });
+
+        // The canvas pixels should have changed after adding the annotation
+        expect(pixelsAfter).not.toBe(pixelsBefore);
+    });
+
+    test('undo after drawing rectangle restores previous canvas state', async ({ page }) => {
+        // Capture baseline
+        const pixelsBefore = await page.evaluate(() => {
+            const canvas = document.querySelector('.pdf-canvas');
+            if (!canvas) return null;
+            const ctx = canvas.getContext('2d');
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += data[i];
+            return sum;
+        });
+
+        // Draw a rectangle
+        await page.locator('#tool-rectangle').click();
+        await drawOnAnnotationLayer(page, 50, 50, 200, 150);
+        await page.waitForTimeout(600);
+
+        // Verify it changed
+        const pixelsAfterDraw = await page.evaluate(() => {
+            const canvas = document.querySelector('.pdf-canvas');
+            if (!canvas) return null;
+            const ctx = canvas.getContext('2d');
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += data[i];
+            return sum;
+        });
+        expect(pixelsAfterDraw).not.toBe(pixelsBefore);
+
+        // Undo
+        await page.locator('#btn-undo').click();
+        await page.waitForTimeout(600);
+
+        // The canvas should be back close to the original
+        const pixelsAfterUndo = await page.evaluate(() => {
+            const canvas = document.querySelector('.pdf-canvas');
+            if (!canvas) return null;
+            const ctx = canvas.getContext('2d');
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += data[i];
+            return sum;
+        });
+        expect(pixelsAfterUndo).toBe(pixelsBefore);
+    });
 });
