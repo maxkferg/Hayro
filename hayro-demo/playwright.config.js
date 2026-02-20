@@ -12,13 +12,26 @@ export default defineConfig({
     use: {
         baseURL: 'http://localhost:8080',
         headless: true,
-        viewport: { width: 1280, height: 900 },
         actionTimeout: 10_000,
     },
     projects: [
         {
             name: 'chromium',
-            use: { browserName: 'chromium' },
+            use: {
+                browserName: 'chromium',
+                viewport: { width: 1280, height: 900 },
+            },
+            testIgnore: /mobile/,
+        },
+        {
+            name: 'mobile-chromium',
+            use: {
+                browserName: 'chromium',
+                viewport: { width: 390, height: 844 },
+                isMobile: true,
+                hasTouch: true,
+            },
+            testMatch: /mobile/,
         },
     ],
     webServer: {
