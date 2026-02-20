@@ -683,7 +683,8 @@ body {
         min-width: 36px;
     }
 
-    #color-group {
-        display: none;
+    .color-btn {
+        width: 22px;
+        height: 22px;
     }
 }
