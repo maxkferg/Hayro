@@ -83,6 +83,8 @@ function bindUi() {
         redoButton: document.getElementById('btn-redo'),
         annotCount: document.getElementById('annot-count'),
         clearLogs: document.getElementById('clear-logs'),
+        logWindow: document.getElementById('log-window'),
+        logToggle: document.getElementById('log-toggle'),
         toolButtons: {
             select: document.getElementById('tool-select'),
             highlight: document.getElementById('tool-highlight'),
@@ -1188,6 +1190,12 @@ function setupLogWindow() {
     ui.clearLogs.addEventListener('click', () => {
         logContent.innerHTML = '';
     });
+
+    if (ui.logToggle && ui.logWindow) {
+        ui.logToggle.addEventListener('click', () => {
+            ui.logWindow.hidden = !ui.logWindow.hidden;
+        });
+    }
 
     const original = {
         log: console.log,

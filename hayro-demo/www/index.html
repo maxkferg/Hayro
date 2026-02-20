@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Hayro PDF Studio</title>
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,75 +11,118 @@
         <header id="topbar">
             <div class="brand">
                 <div class="brand-dot"></div>
-                <div>
-                    <h1>Hayro PDF Studio</h1>
-                    <p>Production capability preview</p>
-                </div>
+                <span class="brand-name">Hayro PDF Studio</span>
             </div>
             <div class="header-actions">
-                <button id="open-pdf-btn" class="ghost-btn" aria-label="Open PDF">Open PDF</button>
-                <button id="btn-save" class="primary-btn" aria-label="Save annotated PDF">Save</button>
+                <button id="open-pdf-btn" class="topbar-btn" aria-label="Open PDF">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                    <span class="btn-label">Open</span>
+                </button>
+                <button id="btn-save" class="topbar-btn topbar-btn--primary" aria-label="Save annotated PDF">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                    <span class="btn-label">Save</span>
+                </button>
+                <button id="log-toggle" class="topbar-btn" aria-label="Toggle logs" title="Toggle log panel">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                </button>
             </div>
             <input type="file" id="file-input" accept=".pdf" hidden>
         </header>
 
-        <main id="workspace">
-            <aside id="left-panel">
-                <section class="panel-card">
-                    <h2>Tools</h2>
-                    <div id="tool-group">
-                        <button id="tool-select" class="tool-btn active" title="Select (V)">Select</button>
-                        <button id="tool-highlight" class="tool-btn" title="Highlight (H)">Highlight</button>
-                        <button id="tool-rectangle" class="tool-btn" title="Rectangle (R)">Rectangle</button>
-                        <button id="tool-ink" class="tool-btn" title="Pencil (P)">Pencil</button>
-                        <button id="tool-text" class="tool-btn" title="Free Text (T)">Text</button>
-                        <button id="tool-text-field" class="tool-btn" title="Text Field (F)">Text Field</button>
-                        <button id="tool-signature-field" class="tool-btn" title="Signature Field (S)">Signature</button>
-                    </div>
-                </section>
+        <div id="main-toolbar">
+            <!-- Page Navigation -->
+            <div class="toolbar-group" id="nav-group">
+                <button id="prev-page" class="tb-btn" title="Previous page" aria-label="Previous page">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+                <div id="page-info">1 / 1</div>
+                <input type="number" id="page-input" min="1" title="Go to page" aria-label="Go to page">
+                <button id="next-page" class="tb-btn" title="Next page" aria-label="Next page">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+            </div>
 
-                <section class="panel-card">
-                    <h2>Color</h2>
-                    <div id="color-group">
-                        <button class="color-btn" data-color="1,1,0" style="background:#ffd84d" title="Yellow"></button>
-                        <button class="color-btn active" data-color="1,0.2,0.2" style="background:#ff5b5b" title="Red"></button>
-                        <button class="color-btn" data-color="0.2,0.45,1" style="background:#3377ff" title="Blue"></button>
-                        <button class="color-btn" data-color="0.12,0.68,0.3" style="background:#1fb95f" title="Green"></button>
-                        <button class="color-btn" data-color="0,0,0" style="background:#111111" title="Black"></button>
-                    </div>
-                </section>
+            <div class="toolbar-divider"></div>
 
-                <section class="panel-card">
-                    <h2>History</h2>
-                    <div class="history-actions">
-                        <button id="btn-undo" class="ghost-btn" title="Undo (Ctrl+Z)" disabled>Undo</button>
-                        <button id="btn-redo" class="ghost-btn" title="Redo (Ctrl+Shift+Z)" disabled>Redo</button>
-                    </div>
-                    <div id="annot-count">No pending edits</div>
-                </section>
-            </aside>
+            <!-- Annotation Tools -->
+            <div class="toolbar-group" id="tools-group">
+                <button id="tool-select" class="tool-btn active" title="Select (V)" aria-label="Select">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M4 2l12 9.5-5.1 1.3 3.4 6.6-2.5 1.2-3.4-6.5L4 18V2z"/></svg>
+                </button>
+                <button id="tool-highlight" class="tool-btn" title="Highlight (H)" aria-label="Highlight">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                </button>
+                <button id="tool-rectangle" class="tool-btn" title="Rectangle (R)" aria-label="Rectangle">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+                </button>
+                <button id="tool-ink" class="tool-btn" title="Pencil (P)" aria-label="Pencil">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="20" x2="4" y2="20"/><path d="M18.37 3.63a1 1 0 0 1 1.41 0l.59.59a1 1 0 0 1 0 1.41L7.71 18.29 4 20l1.71-3.71L18.37 3.63z"/></svg>
+                </button>
+                <button id="tool-text" class="tool-btn" title="Free Text (T)" aria-label="Free Text">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9.5" y1="20" x2="14.5" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+                </button>
+                <button id="tool-text-field" class="tool-btn" title="Text Field (F)" aria-label="Text Field">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="8" y1="10" x2="8" y2="14"/><path d="M6 10h4M6 14h4"/></svg>
+                </button>
+                <button id="tool-signature-field" class="tool-btn" title="Signature Field (S)" aria-label="Signature Field">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 19c3.5-3.5 6-2 7.5-3.5S10 12 12 10s4.5 1 4 3-3 2-1.5 4 4 1.5 5.5 0"/><line x1="2" y1="22" x2="22" y2="22"/></svg>
+                </button>
+            </div>
 
-            <section id="viewer-column">
-                <div id="toolbar">
-                    <div class="toolbar-group">
-                        <button id="prev-page" class="ghost-btn" title="Previous page">←</button>
-                        <div id="page-info">1 / 1</div>
-                        <input type="number" id="page-input" min="1" title="Go to page">
-                        <button id="next-page" class="ghost-btn" title="Next page">→</button>
-                    </div>
-                    <div class="toolbar-group">
-                        <button id="zoom-out" class="ghost-btn" title="Zoom out">−</button>
-                        <input id="zoom-input" type="number" min="25" max="500" step="5" value="100" aria-label="Zoom percentage">
-                        <span class="zoom-suffix">%</span>
-                        <button id="zoom-in" class="ghost-btn" title="Zoom in">+</button>
-                        <button id="zoom-fit-width" class="ghost-btn">Fit Width</button>
-                        <button id="zoom-fit-page" class="ghost-btn">Fit Page</button>
-                    </div>
+            <div class="toolbar-divider"></div>
+
+            <!-- Color Picker -->
+            <div class="toolbar-group" id="color-group">
+                <button class="color-btn" data-color="1,1,0" style="background:#ffd84d" title="Yellow" aria-label="Yellow"></button>
+                <button class="color-btn active" data-color="1,0.2,0.2" style="background:#ff5b5b" title="Red" aria-label="Red"></button>
+                <button class="color-btn" data-color="0.2,0.45,1" style="background:#3377ff" title="Blue" aria-label="Blue"></button>
+                <button class="color-btn" data-color="0.12,0.68,0.3" style="background:#1fb95f" title="Green" aria-label="Green"></button>
+                <button class="color-btn" data-color="0,0,0" style="background:#111111" title="Black" aria-label="Black"></button>
+            </div>
+
+            <div class="toolbar-divider"></div>
+
+            <!-- History -->
+            <div class="toolbar-group" id="history-group">
+                <button id="btn-undo" class="tb-btn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                </button>
+                <button id="btn-redo" class="tb-btn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10"/></svg>
+                </button>
+                <span id="annot-count" class="toolbar-label">No pending edits</span>
+            </div>
+
+            <div class="toolbar-divider"></div>
+
+            <!-- Zoom Controls -->
+            <div class="toolbar-group" id="zoom-group">
+                <button id="zoom-out" class="tb-btn" title="Zoom out" aria-label="Zoom out">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                </button>
+                <div class="zoom-field">
+                    <input id="zoom-input" type="number" min="25" max="500" step="5" value="100" aria-label="Zoom percentage">
+                    <span class="zoom-suffix">%</span>
                 </div>
+                <button id="zoom-in" class="tb-btn" title="Zoom in" aria-label="Zoom in">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                </button>
+                <button id="zoom-fit-width" class="tb-btn" title="Fit Width" aria-label="Fit Width">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="17" y1="12" x2="22" y2="12"/><polyline points="19 9 22 12 19 15"/><line x1="7" y1="12" x2="2" y2="12"/><polyline points="5 15 2 12 5 9"/></svg>
+                </button>
+                <button id="zoom-fit-page" class="tb-btn" title="Fit Page" aria-label="Fit Page">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                </button>
+            </div>
+        </div>
 
+        <main id="workspace">
+            <section id="viewer-column">
                 <div id="empty-state">
                     <div class="empty-card" id="drop-zone">
-                        <div class="empty-icon">📄</div>
+                        <div class="empty-icon">
+                            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        </div>
                         <h2>Open a PDF to start</h2>
                         <p>Drop a PDF file here, or click to browse.</p>
                     </div>
@@ -94,13 +137,13 @@
             </section>
         </main>
 
-        <section id="log-window">
+        <section id="log-window" hidden>
             <div id="log-header">
                 <span>Logs</span>
                 <button id="clear-logs" class="ghost-btn" title="Clear logs">Clear</button>
             </div>
             <div id="log-content"></div>
-        </div>
+        </section>
     </div>
     <script type="module" src="index.js"></script>
 </body>
